@@ -1,0 +1,12 @@
+{
+  "name": "mdm-regional-analytics",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MDM intake, duplicate detection, approvals, regional analytics, forecasting and SAP B1 export built on mdm_fake_data_all.csv",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "validate": "node src/validate.js"
+  },
+  "engines": { "node": ">=22.5" }
+}
