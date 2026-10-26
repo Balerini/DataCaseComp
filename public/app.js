@@ -113,7 +113,7 @@ function filterBar(rerender, { basis = true, entity = true } = {}) {
   const o = S.meta.options;
   return h('div', { class: 'filters' },
     h('label', {}, 'Country', sel(o.countries.map(c => [c, `${c} – ${COUNTRY_NAME[c]}`]), S.f.country, v => { S.f.country = v; rerender(); }, 'All countries')),
-    h('label', {}, 'Product', sel(['A', 'B', 'C'], S.f.product, v => { S.f.product = v; rerender(); }, 'All products')),
+    h('label', {}, 'Product code', sel(['A', 'B', 'C'], S.f.product, v => { S.f.product = v; rerender(); }, 'All product codes')),
     entity ? h('label', {}, 'Entity', sel(o.entities, S.f.entity, v => { S.f.entity = v; rerender(); }, 'All entities')) : null,
     basis ? h('label', {}, 'Customer basis', seg([['dedup', 'Deduplicated'], ['raw', 'Raw records']], S.basis, v => { S.basis = v; rerender(); })) : null);
 }
@@ -124,18 +124,41 @@ const pages = {};
 pages.overview = async el => {
   const draw = async () => {
     const q = qs({ ...S.f, basis: S.basis });
-    const [o, top, v] = await Promise.all([api('/analytics/overview' + q), api('/analytics/top-customers' + q + (q ? '&' : '?') + 'n=10'), api('/validate')]);
-    const raw = await api('/analytics/overview' + qs({ ...S.f, basis: 'raw' }));
+    const [o, top, v, raw, dedup, rawCustomerFc, dedupCustomerFc] = await Promise.all([
+      api('/analytics/overview' + q), api('/analytics/top-customers' + q + (q ? '&' : '?') + 'n=10'), api('/validate'),
+      api('/analytics/overview' + qs({ ...S.f, basis: 'raw' })),
+      api('/analytics/overview' + qs({ ...S.f, basis: 'dedup' })),
+      api('/forecast' + qs({ ...S.f, basis: 'raw', metric: 'customers' })),
+      api('/forecast' + qs({ ...S.f, basis: 'dedup', metric: 'customers' })),
+    ]);
     const bad = v.checks.filter(c => !c.pass).length;
     const mode = S.tab.ov || 'country';
+    const detailMode = S.tab.ovDetail || 'country';
     const labels = o.monthly.map(x => x.month);
     const countries = Object.keys(o.monthlyByCountry).filter(c => !S.f.country || c === S.f.country);
+    const rawSeasonalWape = rawCustomerFc.backtest?.metrics.find(x => x.model === 'seasonal')?.wape;
+    const dedupSeasonalWape = dedupCustomerFc.backtest?.metrics.find(x => x.model === 'seasonal')?.wape;
+    const pp = (a, b) => a == null || b == null ? 'n/a' : `${((a - b) * 100) > 0 ? '+' : ''}${((a - b) * 100).toFixed(1)} pp`;
     const chart = mode === 'total'
       ? lineChart({ labels, series: [{ name: 'All selected', color: 'var(--s1)', values: o.monthly.map(x => x.value) }] })
       : lineChart({ labels, series: countries.map(c => ({ name: c, color: COUNTRY_COLOR[c], values: o.monthlyByCountry[c].map(x => (S.f.product || S.f.entity ? null : x.value)) })) });
     const filtered = !!(S.f.product || S.f.entity);
     wrap.replaceChildren(
       filterBar(draw),
+      h('div', { class: 'card story' },
+        h('div', { class: 'story-head' }, h('div', {}, h('h2', {}, 'You can’t forecast customers you can’t count'), h('p', { class: 'sub' }, 'The same purchase-order history tells a different customer story when duplicate records are consolidated into golden identities.')),
+          h('button', { onclick: () => { S.tab.fm = 'customers'; location.hash = '#forecast'; } }, 'See raw vs. golden forecast')),
+        table([
+          { h: 'Measure', f: r => r.measure },
+          { h: 'Raw records', num: 1, f: r => r.raw },
+          { h: 'Golden customers', num: 1, f: r => r.golden },
+          { h: 'Raw − golden', num: 1, f: r => r.delta },
+        ], [
+          { measure: 'Active customers with orders', raw: n0(raw.totals.activeCustomers), golden: n0(dedup.totals.activeCustomers), delta: `−${n0(raw.totals.activeCustomers - dedup.totals.activeCustomers)} identities` },
+          { measure: 'Growth · latest 3 vs prior 3 months', raw: rawCustomerFc.growth ? sgn(rawCustomerFc.growth.change) : 'n/a', golden: dedupCustomerFc.growth ? sgn(dedupCustomerFc.growth.change) : 'n/a', delta: pp(rawCustomerFc.growth?.change, dedupCustomerFc.growth?.change) },
+          { measure: `Seasonal forecast WAPE · ${rawCustomerFc.backtest?.testMonths.length || 0}-month holdout`, raw: rawSeasonalWape == null ? 'n/a' : pct(rawSeasonalWape), golden: dedupSeasonalWape == null ? 'n/a' : pct(dedupSeasonalWape), delta: pp(rawSeasonalWape, dedupSeasonalWape) },
+        ]),
+        h('p', { class: 'muted', style: 'font-size:12px;margin-bottom:0' }, 'Growth compares average monthly active customer identities in the latest 3 months with the prior 3. WAPE is measured on the same final 3 months. PO value and PO-count totals do not change when customer IDs are deduplicated.')),
       h('div', { class: 'grid g4' },
         kpi('PO value (SGD)', moneyFull(o.totals.value), `${n0(o.totals.pos)} purchase orders · avg ${moneyFull(o.totals.avgOrderValue)}`),
         kpi('Active customers', n0(o.totals.activeCustomers), S.basis === 'dedup' ? `${n0(raw.totals.activeCustomers)} raw records → ${n0(o.totals.activeCustomers)} real customers` : `Raw customer_id records (deduplicated: ${n0((await api('/analytics/overview' + qs({ ...S.f, basis: 'dedup' }))).totals.activeCustomers)})`),
@@ -147,14 +170,13 @@ pages.overview = async el => {
         h('div', { class: 'filters' }, h('h2', { style: 'margin:0;flex:1' }, 'Monthly PO value'), seg([['country', 'By country'], ['total', 'Total']], mode, v => { S.tab.ov = v; draw(); })),
         mode === 'country' && filtered ? h('p', { class: 'note warn' }, 'Per-country lines are shown without product/entity filters; switch to Total to see the filtered series.') : null,
         mode === 'country' && filtered ? lineChart({ labels, series: [{ name: 'Filtered total', color: 'var(--s1)', values: o.monthly.map(x => x.value) }] }) : chart),
-      h('div', { class: 'grid g2' },
-        h('div', { class: 'card' }, h('h2', {}, 'By country'),
-          table([{ h: 'Country', f: r => `${r.country} – ${COUNTRY_NAME[r.country]}` }, { h: 'POs', num: 1, f: r => n0(r.pos) }, { h: 'Value', num: 1, f: r => money(r.value) }, { h: 'Share', num: 1, f: r => pct(r.shareOfValue, 0) },
-            { h: S.basis === 'dedup' ? 'Customers' : 'Records', num: 1, f: r => n0(r.activeCustomers) }, { h: 'Growth', num: 1, f: r => (r.yoy ? sgn(r.yoy.growth) : '–') }], o.byCountry)),
-        h('div', { class: 'card' }, h('h2', {}, 'By product'),
-          table([{ h: 'Product', f: r => r.product }, { h: 'POs', num: 1, f: r => n0(r.pos) }, { h: 'Units', num: 1, f: r => n0(r.qty) }, { h: 'Value', num: 1, f: r => money(r.value) }, { h: 'Unit price', num: 1, f: r => (r.unitPrice ? 'S$' + r.unitPrice.toFixed(0) : '–') }, { h: 'Growth', num: 1, f: r => (r.yoy ? sgn(r.yoy.growth) : '–') }], o.byProduct))),
-      h('div', { class: 'card' }, h('h2', {}, `Top customers by PO value (${S.basis === 'dedup' ? 'merged golden customers' : 'raw customer records'})`),
-        hbars(top, { label: r => r.name || r.key, sub: r => `${r.country} · ${r.pos} POs · products ${r.products}` + (r.recordsMerged > 1 ? ` · ${r.recordsMerged} records merged` : ''), value: r => r.value, color: r => COUNTRY_COLOR[r.country] })));
+      h('div', { class: 'card' },
+        h('div', { class: 'filters detail-tabs' }, h('h2', { style: 'margin:0;flex:1' }, 'Regional breakdown'),
+          seg([['country', 'Countries'], ['product', 'Product codes'], ['customers', 'Top customers']], detailMode, v => { S.tab.ovDetail = v; draw(); })),
+        detailMode === 'country' ? table([{ h: 'Country', f: r => `${r.country} – ${COUNTRY_NAME[r.country]}` }, { h: 'POs', num: 1, f: r => n0(r.pos) }, { h: 'Value', num: 1, f: r => money(r.value) }, { h: 'Share', num: 1, f: r => pct(r.shareOfValue, 0) },
+          { h: S.basis === 'dedup' ? 'Customers' : 'Records', num: 1, f: r => n0(r.activeCustomers) }, { h: 'Growth', num: 1, f: r => (r.yoy ? sgn(r.yoy.growth) : '–') }], o.byCountry)
+          : detailMode === 'product' ? table([{ h: 'Product code', f: r => r.product }, { h: 'POs', num: 1, f: r => n0(r.pos) }, { h: 'Units', num: 1, f: r => n0(r.qty) }, { h: 'Value', num: 1, f: r => money(r.value) }, { h: 'Unit price', num: 1, f: r => (r.unitPrice ? 'S$' + r.unitPrice.toFixed(0) : '–') }, { h: 'Growth', num: 1, f: r => (r.yoy ? sgn(r.yoy.growth) : '–') }], o.byProduct)
+            : hbars(top, { label: r => r.name || r.key, sub: r => `${r.country} · ${r.pos} POs · products ${r.products}` + (r.recordsMerged > 1 ? ` · ${r.recordsMerged} records merged` : ''), value: r => r.value, color: r => COUNTRY_COLOR[r.country] })));
   };
   const wrap = h('div', {});
   el.append(h('h1', {}, 'Regional overview'), h('p', { class: 'sub' }, 'Calculated live from purchase_orders in the source CSV. Deduplicated view re-keys the same PO rows by golden customer.'), wrap);
@@ -263,39 +285,78 @@ pages.intake = async el => {
 
 pages.duplicates = async el => {
   const [ev, cl, gr] = await Promise.all([api('/duplicates/evaluation'), api('/duplicates/clusters'), api('/duplicates/groups')]);
-  let term = '';
+  let term = '', countryFilter = '', entityFilter = '', mode = S.tab.dup || 'groups', page = S.tab.dupPage || 0;
   const list = h('div', {});
+  const content = h('div', {});
+  const controls = h('div', { class: 'filters' });
+  const drawTabs = () => controls.replaceChildren(h('h2', { style: 'margin:0;flex:1' }, 'Duplicate review'),
+    seg([['groups', 'Golden groups'], ['quality', 'Matcher quality']], mode, v => { mode = v; S.tab.dup = v; drawTabs(); drawContent(); }));
   const drawList = () => {
-    const g = gr.groups.filter(x => !term || JSON.stringify(x).toLowerCase().includes(term));
-    list.replaceChildren(h('p', { class: 'muted' }, `${g.length} of ${gr.total} golden customers with more than one source record`), g.slice(0, 40).map(x => h('div', { class: 'card' },
+    const g = gr.groups.filter(x => (!term || JSON.stringify(x).toLowerCase().includes(term))
+      && (!countryFilter || x.members.some(m => m.country === countryFilter))
+      && (!entityFilter || x.members.some(m => m.entity === entityFilter)));
+    const pageSize = 5, pageCount = Math.max(1, Math.ceil(g.length / pageSize));
+    page = Math.min(page, pageCount - 1);
+    const shown = g.slice(page * pageSize, (page + 1) * pageSize);
+    list.replaceChildren(
+      h('div', { class: 'pagination' }, h('span', { class: 'muted' }, g.length ? `Showing ${page * pageSize + 1}–${page * pageSize + shown.length} of ${g.length} groups · ${gr.total} total` : `No matching groups · ${gr.total} total`),
+        h('div', { class: 'pagination-actions' }, h('button', { class: 'ghost', disabled: page === 0, onclick: () => { page--; S.tab.dupPage = page; drawList(); } }, 'Previous'),
+          h('span', { class: 'muted' }, `Page ${page + 1} of ${pageCount}`),
+          h('button', { class: 'ghost', disabled: page + 1 >= pageCount, onclick: () => { page++; S.tab.dupPage = page; drawList(); } }, 'Next'))),
+      shown.map(x => h('div', { class: 'card' },
       h('b', {}, x.golden_id), ' ', h('span', { class: 'muted' }, `${x.members.length} records`),
       table([{ h: 'ID', f: m => m.customer_id + (m.is_survivor ? ' ★' : '') }, { h: 'Name', f: m => m.name }, { h: 'Entity', f: m => m.entity }, { h: 'Country', f: m => m.country }, { h: 'UEN', f: m => m.uen || '–' }, { h: 'Address', f: m => m.address }, { h: 'Recorded reason', f: m => m.match_reason }], x.members))));
   };
+  const drawContent = () => {
+    if (mode === 'groups') {
+      drawList();
+      content.replaceChildren(h('div', { class: 'filters group-filters' },
+        h('label', {}, 'Search groups', h('input', { value: term, placeholder: 'Name, customer ID, golden ID…', oninput: debounce(e => { term = e.target.value.toLowerCase(); page = 0; S.tab.dupPage = page; drawList(); }) })),
+        h('label', {}, 'Country', sel(S.meta.options.countries.map(c => [c, `${c} – ${COUNTRY_NAME[c]}`]), countryFilter, v => { countryFilter = v; page = 0; S.tab.dupPage = page; drawList(); }, 'All countries')),
+        h('label', {}, 'Entity', sel(S.meta.options.entities, entityFilter, v => { entityFilter = v; page = 0; S.tab.dupPage = page; drawList(); }, 'All entities')),
+        h('button', { class: 'ghost', disabled: !term && !countryFilter && !entityFilter, onclick: () => { term = ''; countryFilter = ''; entityFilter = ''; page = 0; S.tab.dupPage = page; drawContent(); } }, 'Clear filters')), list);
+    } else content.replaceChildren(
+      h('div', { class: 'grid g4' }, kpi('Source customer records', n0(S.meta.source.tables.customers), 'mdm_fake_data_all.csv'), kpi('Golden customers (provided mapping)', n0(cl.distinctInGoldenMap), 'golden_map table'),
+        kpi('Distinct after live matching', n0(cl.distinctAfterMatching), `${cl.pairs} duplicate pairs at ≥ ${pct(ev.thresholds.duplicate, 0)}`), kpi('Matcher vs provided mapping', `P ${pct(ev.precision, 1)} · R ${pct(ev.recall, 1)}`, `${ev.tp} true pairs found, ${ev.fp} false, ${ev.fn} missed`)),
+      ev.fn ? h('div', { class: 'note warn' }, `Missed pair(s): ${ev.missed.map(m => `${m[0]} / ${m[1]} (score ${m[2]}, below the ${ev.thresholds.duplicate} duplicate threshold but ≥ ${ev.thresholds.possible} so it is surfaced as “possible”)`).join('; ')}. Thresholds were set once and not tuned to this reference.`) : h('div', { class: 'note good' }, 'No missed pairs against the provided golden mapping.'));
+  };
   el.append(h('h1', {}, 'Duplicate detection'), h('p', { class: 'sub' }, 'Hard key = normalised registration number + country. Fuzzy = normalised name (legal suffixes dropped, token-sorted, edit distance) and address (Jalan/Jln/Jl, Road/Rd…). Source records are never deleted; the canonical mapping is kept separately.'),
-    h('div', { class: 'grid g4' }, kpi('Source customer records', n0(S.meta.source.tables.customers), 'mdm_fake_data_all.csv'), kpi('Golden customers (provided mapping)', n0(cl.distinctInGoldenMap), 'golden_map table'),
-      kpi('Distinct after live matching', n0(cl.distinctAfterMatching), `${cl.pairs} duplicate pairs at ≥ ${pct(ev.thresholds.duplicate, 0)}`), kpi('Matcher vs provided mapping', `P ${pct(ev.precision, 1)} · R ${pct(ev.recall, 1)}`, `${ev.tp} true pairs found, ${ev.fp} false, ${ev.fn} missed`)),
-    ev.fn ? h('div', { class: 'note warn' }, `Missed pair(s): ${ev.missed.map(m => `${m[0]} / ${m[1]} (score ${m[2]}, below the ${ev.thresholds.duplicate} duplicate threshold but ≥ ${ev.thresholds.possible} so it is surfaced as “possible”)`).join('; ')}. Thresholds were set once and not tuned to this reference.`) : null,
-    h('div', { class: 'filters' }, h('label', {}, 'Filter groups', h('input', { placeholder: 'name, id, golden id…', oninput: debounce(e => { term = e.target.value.toLowerCase(); drawList(); }) }))), list);
-  drawList();
+    h('div', { class: 'card' }, controls, content));
+  drawTabs();
+  drawContent();
 };
 
 pages.requests = async (el, arg) => {
-  const f = { status: S.tab.rs || '', type: '', role: '', q: '' };
+  const f = { status: S.tab.rs ?? 'pending_approval', type: '', role: '', q: '' };
   const listBox = h('div', {});
+  const statusControls = h('div', { class: 'filters status-tabs' });
+  let page = S.tab.reqPage || 0;
   const draw = async () => {
     const rows = await api('/requests' + qs(f));
-    listBox.replaceChildren(h('p', { class: 'muted' }, `${rows.length} request(s)`), table([
+    const pageSize = 15, pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+    page = Math.min(page, pageCount - 1);
+    const shown = rows.slice(page * pageSize, (page + 1) * pageSize);
+    const controls = h('div', { class: 'pagination' }, h('span', { class: 'muted' }, rows.length ? `Showing ${page * pageSize + 1}–${page * pageSize + shown.length} of ${rows.length} requests` : 'No matching requests'),
+      h('div', { class: 'pagination-actions' }, h('button', { class: 'ghost', disabled: page === 0, onclick: () => { page--; S.tab.reqPage = page; draw(); } }, 'Previous'),
+        h('span', { class: 'muted' }, `Page ${page + 1} of ${pageCount}`),
+        h('button', { class: 'ghost', disabled: page + 1 >= pageCount, onclick: () => { page++; S.tab.reqPage = page; draw(); } }, 'Next')));
+    listBox.replaceChildren(controls, table([
       { h: 'Request', f: r => h('span', {}, r.request_id, ' ', r.source === 'app' ? h('span', { class: 'pill info' }, 'new') : null) }, { h: 'Type', f: r => r.request_type.replace('_', ' ') },
       { h: 'Entity/Ctry', f: r => `${r.entity}/${r.country}` }, { h: 'Target', f: r => r.target_customer_id || '–' }, { h: 'Status', f: r => statusPill(r.status) },
-      { h: 'Awaiting', f: r => r.awaiting || '–' }, { h: 'By', f: r => r.requested_by }, { h: 'Created', f: r => r.created_at.replace('T', ' ') }], rows, { onRow: r => (location.hash = '#requests/' + r.request_id) }));
+      { h: 'Awaiting', f: r => r.awaiting || '–' }, { h: 'By', f: r => r.requested_by }, { h: 'Created', f: r => r.created_at.replace('T', ' ') }], shown, { onRow: r => (location.hash = '#requests/' + r.request_id) }));
   };
+  const resetPage = () => { page = 0; S.tab.reqPage = page; draw(); };
+  const drawStatusTabs = () => statusControls.replaceChildren(seg(
+    [['', 'All'], ['pending_approval', 'Pending'], ['approved', 'Approved'], ['applied', 'Applied'], ['rejected', 'Rejected'], ['draft', 'Draft']],
+    f.status, v => { f.status = v; S.tab.rs = v; drawStatusTabs(); resetPage(); }));
   el.append(h('h1', {}, 'Requests & approvals'), h('p', { class: 'sub' }, 'Imported rows come from the CSV’s requests/audit_log tables (loaded once into the app database). Decisions made here are stored in the app database only.'),
+    statusControls,
     h('div', { class: 'filters' },
-      h('label', {}, 'Status', sel(['draft', 'pending_approval', 'approved', 'applied', 'rejected'], f.status, v => { f.status = v; S.tab.rs = v; draw(); }, 'Any')),
-      h('label', {}, 'Type', sel(S.meta.options.requestTypes, f.type, v => { f.type = v; draw(); }, 'Any')),
-      h('label', {}, 'Awaiting role', sel(S.meta.options.roles, f.role, v => { f.role = v; draw(); }, 'Any')),
-      h('label', {}, 'Search', h('input', { oninput: debounce(e => { f.q = e.target.value; draw(); }) })),
-      h('button', { class: 'ghost', onclick: () => { f.role = $('#role').value; draw(); } }, 'My queue (header role)')), listBox);
+      h('label', {}, 'Type', sel(S.meta.options.requestTypes, f.type, v => { f.type = v; resetPage(); }, 'Any')),
+      h('label', {}, 'Awaiting role', sel(S.meta.options.roles, f.role, v => { f.role = v; resetPage(); }, 'Any')),
+      h('label', {}, 'Search', h('input', { oninput: debounce(e => { f.q = e.target.value; resetPage(); }) })),
+      h('button', { class: 'ghost', onclick: () => { f.role = $('#role').value; resetPage(); } }, 'My queue (header role)')), listBox);
+  drawStatusTabs();
   await draw();
   if (arg) openDrawer(arg, draw);
 };
@@ -354,7 +415,7 @@ pages.analytics = async el => {
     let c;
     if (tab === 'customers') {
       const rows = await api('/analytics/top-customers' + q + (q ? '&' : '?') + 'n=25');
-      c = h('div', { class: 'card' }, h('h2', {}, 'Top 25 customers by PO value'), table([{ h: 'Customer', f: r => r.name }, { h: 'Key', f: r => r.key }, { h: 'Ctry', f: r => r.country }, { h: 'POs', num: 1, f: r => n0(r.pos) }, { h: 'Value', num: 1, f: r => moneyFull(r.value) }, { h: 'Share', num: 1, f: r => pct(r.share) }, { h: 'Products', f: r => r.products }, { h: 'Last PO', f: r => r.lastOrder }, { h: 'Records', num: 1, f: r => r.recordsMerged }], rows));
+      c = h('div', { class: 'card' }, h('h2', {}, 'Top 25 customers by PO value'), table([{ h: 'Customer', f: r => r.name }, { h: 'Key', f: r => r.key }, { h: 'Ctry', f: r => r.country }, { h: 'POs', num: 1, f: r => n0(r.pos) }, { h: 'Value', num: 1, f: r => moneyFull(r.value) }, { h: 'Share', num: 1, f: r => pct(r.share) }, { h: 'Product codes', f: r => r.products }, { h: 'Last PO', f: r => r.lastOrder }, { h: 'Records', num: 1, f: r => r.recordsMerged }], rows));
     } else if (tab === 'dropoff') {
       const r = await api('/analytics/dropoff' + q + (q ? '&' : '?') + 'days=' + days);
       c = h('div', {}, h('div', { class: 'filters' }, h('label', {}, 'Window', sel([['60', '60 days'], ['90', '90 days'], ['180', '180 days']], days, v => { S.tab.days = v; draw(); }))),
@@ -367,7 +428,7 @@ pages.analytics = async el => {
       const P = ['A', 'B', 'C'];
       c = h('div', {}, h('div', { class: 'grid g4' }, kpi('Customers with POs', n0(r.customers)), kpi('Buy all 3 products', n0(r.buyAll3), pct(r.buyAll3 / r.customers, 0) + ' of customers'), kpi('Single-product', n0(r.singleProduct), pct(r.singleProduct / r.customers, 0))),
         h('div', { class: 'grid g2' }, h('div', { class: 'card' }, h('h2', {}, 'Co-purchase (customers buying both)'), table([{ h: '' , f: x => x }, ...P.map(y => ({ h: y, num: 1, f: x => n0(r.matrix[x + y]) }))], P)),
-          h('div', { class: 'card' }, h('h2', {}, 'Whitespace: customers who never bought…'), table([{ h: 'Product', f: x => x }, { h: 'Customers', num: 1, f: x => n0(r.whitespace[x]) }], P))),
+          h('div', { class: 'card' }, h('h2', {}, 'Whitespace: customers who never bought…'), table([{ h: 'Product code', f: x => x }, { h: 'Customers', num: 1, f: x => n0(r.whitespace[x]) }], P))),
         h('div', { class: 'card' }, h('h2', {}, 'Largest cross-sell opportunities'), table([{ h: 'Customer', f: x => x.name }, { h: 'Ctry', f: x => x.country }, { h: 'Buys', f: x => x.has }, { h: 'Not yet', f: x => x.missing }, { h: 'Their PO value', num: 1, f: x => money(x.value) }], r.topOpportunities)));
     } else {
       const r = await api('/analytics/dedup-impact' + qs({ ...S.f, days }));
@@ -388,40 +449,95 @@ pages.analytics = async el => {
 
 pages.forecast = async el => {
   const metric = S.tab.fm || 'value';
-  const [r, sum] = await Promise.all([api('/forecast' + qs({ country: S.f.country, product: S.f.product, entity: S.f.entity, metric })), api('/forecast/summary' + qs({ metric }))]);
+  const identityCompare = metric === 'customers';
+  const common = { country: S.f.country, product: S.f.product, entity: S.f.entity, metric };
+  const [r, sum, rawCustomers] = identityCompare
+    ? await Promise.all([api('/forecast' + qs({ ...common, basis: 'dedup' })), api('/forecast/summary' + qs({ metric: 'value' })), api('/forecast' + qs({ ...common, basis: 'raw' }))])
+    : [...await Promise.all([api('/forecast' + qs(common)), api('/forecast/summary' + qs({ metric }))]), null];
   const fmt = metric === 'value' ? money : n0;
   const hist = r.history, all = [...hist.map(x => x.month), ...(r.forecast ? r.forecast.months : [])];
   const pad = a => [...a, ...Array(all.length - a.length).fill(null)];
   const nH = hist.length, nBt = r.backtest ? r.backtest.testMonths.length : 0;
   const series = [{ name: 'Actual', color: 'var(--s1)', values: pad(hist.map(x => x.value)) }];
-  if (r.forecast) {
+  if (identityCompare) {
+    series.splice(0, 1,
+      { name: 'Raw active customers', color: 'var(--s1)', values: pad(rawCustomers.history.map(x => x.value)) },
+      { name: 'Deduplicated active customers', color: 'var(--s3)', values: pad(hist.map(x => x.value)) });
+    for (const [data, name, color] of [[rawCustomers, 'Raw', 'var(--s2)'], [r, 'Deduplicated', 'var(--s4)']]) {
+      if (!data.forecast) continue;
+      const chosen = data.forecast.selectedByBacktest;
+      const values = chosen === 'seasonal' ? data.forecast.seasonal : data.forecast.rolling;
+      if (chosen === 'seasonal' && !values) continue;
+      const bridge = Array(data.history.length - 1).fill(null).concat([data.history.at(-1).value]);
+      const future = chosen === 'seasonalNaive'
+        ? data.forecast.months.map((_, i) => data.history[data.history.length + i - 12]?.value ?? null)
+        : values;
+      series.push({ name: `${name} forecast (${chosen === 'seasonal' ? 'seasonal' : chosen === 'seasonalNaive' ? 'seasonal naive' : 'rolling'})`, color, dash: '5 4', values: [...bridge, ...future] });
+    }
+  } else if (r.forecast) {
     const bridge = Array(nH - 1).fill(null).concat([hist.at(-1).value]);
     series.push({ name: 'Rolling-avg forecast', color: 'var(--s2)', dash: '5 4', values: [...bridge, ...r.forecast.rolling] });
     if (r.forecast.seasonal) series.push({ name: 'Seasonal forecast', color: 'var(--s3)', dash: '5 4', values: [...bridge, ...r.forecast.seasonal] });
   }
   const m = x => r.backtest?.metrics.find(k => k.model === x);
-  el.append(h('h1', {}, 'Demand forecast'), h('p', { class: 'sub' }, 'Monthly purchase-order history only. Rolling average = mean of the last 3 months (flat). Seasonal = same month last year × recent level ratio.'),
-    h('div', { class: 'filters' }, h('label', {}, 'Country', sel(S.meta.options.countries, S.f.country, v => { S.f.country = v; route(); }, 'All')), h('label', {}, 'Product', sel(['A', 'B', 'C'], S.f.product, v => { S.f.product = v; route(); }, 'All')),
-      h('label', {}, 'Measure', seg([['value', 'PO value (SGD)'], ['pos', 'PO count']], metric, v => { S.tab.fm = v; route(); }))),
+  el.append(h('h1', {}, identityCompare ? 'Can we count customers?' : 'Demand forecast'), h('p', { class: 'sub' }, identityCompare ? 'Compare source record counts with golden customer counts. This is the deduplication-sensitive demand signal.' : 'Monthly purchase-order history only. Rolling average = mean of the last 3 months (flat). Seasonal = same month last year × recent level ratio.'),
+    h('div', { class: 'filters' }, h('label', {}, 'Country', sel(S.meta.options.countries, S.f.country, v => { S.f.country = v; route(); }, 'All')), h('label', {}, 'Product code', sel(['A', 'B', 'C'], S.f.product, v => { S.f.product = v; route(); }, 'All product codes')),
+      h('label', {}, 'Measure', seg([['customers', 'Active customers'], ['value', 'PO value (SGD)'], ['pos', 'PO count']], metric, v => { S.tab.fm = v; route(); }))),
     r.requested24Months ? h('div', { class: 'note warn' }, r.requested24Months) : null, ...(r.notes || []).map(n => h('div', { class: 'note warn' }, n)),
     h('div', { class: 'note' }, r.dedupNote),
+    identityCompare ? h('div', { class: 'grid g2' },
+      kpi('Raw active-customer growth', rawCustomers.growth ? sgn(rawCustomers.growth.change) : 'n/a', rawCustomers.growth ? `Avg. monthly active identities: ${rawCustomers.growth.prior.toFixed(1)} → ${rawCustomers.growth.recent.toFixed(1)} · ${rawCustomers.growth.priorMonths} vs ${rawCustomers.growth.recentMonths}` : 'Needs six months of history'),
+      kpi('Golden-customer growth', r.growth ? sgn(r.growth.change) : 'n/a', r.growth ? `Avg. monthly active identities: ${r.growth.prior.toFixed(1)} → ${r.growth.recent.toFixed(1)} · ${r.growth.priorMonths} vs ${r.growth.recentMonths}` : 'Needs six months of history')) : null,
     h('div', { class: 'card' }, h('h2', {}, `Actual and forecast${r.forecast ? ' (' + r.forecast.months[0] + ' → ' + r.forecast.months.at(-1) + ')' : ''}`), lineChart({ labels: all, series, fmt })),
     r.backtest ? h('div', { class: 'card' }, h('h2', {}, `Backtest: train ${r.backtest.trainMonths} months, hold out ${r.backtest.testMonths.length}`),
-      table([{ h: 'Model', f: x => ({ rolling: 'Rolling 3-mo average', seasonal: 'Seasonal (last year × level)', seasonalNaive: 'Seasonal naive (last year)' }[x.model]) }, { h: 'WAPE', num: 1, f: x => (x.wape == null ? 'n/a' : pct(x.wape)) }, { h: 'MAPE', num: 1, f: x => (x.mape == null ? 'n/a' : pct(x.mape)) }, { h: '', f: x => (x.model === r.forecast.selectedByBacktest ? h('span', { class: 'pill good' }, 'lowest WAPE') : '') }], r.backtest.metrics),
+      table([{ h: identityCompare ? 'Basis / model' : 'Model', f: x => (identityCompare ? `${x.basis} · ` : '') + ({ rolling: 'Rolling 3-mo average', seasonal: 'Seasonal (last year × level)', seasonalNaive: 'Seasonal naive (last year)' }[x.model]) }, { h: 'WAPE', num: 1, f: x => (x.wape == null ? 'n/a' : pct(x.wape)) }, { h: 'MAPE', num: 1, f: x => (x.mape == null ? 'n/a' : pct(x.mape)) }, { h: '', f: x => (x.model === x.selected ? h('span', { class: 'pill good' }, 'lowest WAPE') : '') }], (identityCompare ? [['raw', rawCustomers], ['deduplicated', r]].flatMap(([basis, data]) => data.backtest.metrics.map(x => ({ ...x, basis, selected: data.forecast?.selectedByBacktest }))) : r.backtest.metrics.map(x => ({ ...x, selected: r.forecast?.selectedByBacktest })))),
       h('h3', {}, 'Holdout months'), table([{ h: 'Month', f: x => x.month }, { h: 'Actual', num: 1, f: x => fmt(x.actual) }, { h: 'Rolling', num: 1, f: x => fmt(x.rolling) }, { h: 'Seasonal', num: 1, f: x => (x.seasonal == null ? '–' : fmt(x.seasonal)) }, { h: 'Seasonal naive', num: 1, f: x => (x.seasonalNaive == null ? '–' : fmt(x.seasonalNaive)) }], r.backtest.rows),
       h('p', { class: 'muted' }, 'WAPE = Σ|actual − forecast| / Σ actual. MAPE = mean of |actual − forecast| / actual. Both computed from the holdout predictions above; with only 3 test points the ranking is not statistically reliable.')) : null,
-    h('div', { class: 'card' }, h('h2', {}, 'Which model wins where? (same 3-month holdout)'),
+    !identityCompare ? h('div', { class: 'card' }, h('h2', {}, 'Which model wins where? (same 3-month holdout)'),
       table([{ h: 'Scope', f: x => x.scope }, { h: 'Rolling WAPE', num: 1, f: x => (x.metrics ? pct(x.metrics[0].wape) : 'n/a') }, { h: 'Seasonal WAPE', num: 1, f: x => (x.metrics?.[1].wape == null ? 'n/a' : pct(x.metrics[1].wape)) }, { h: 'Seasonal-naive WAPE', num: 1, f: x => (x.metrics?.[2].wape == null ? 'n/a' : pct(x.metrics[2].wape)) }, { h: 'Best', f: x => x.selected || '–' }], sum),
-      h('p', { class: 'muted' }, 'Country-level series have ~15 POs a month, so they are noisy; no single model dominates. Treat forecasts as indicative, and re-run the backtest as more history arrives.')),
+      h('p', { class: 'muted' }, 'Country-level series have ~15 POs a month, so they are noisy; no single model dominates. Treat forecasts as indicative, and re-run the backtest as more history arrives.')) : null,
     r.forecast ? h('div', { class: 'card' }, h('h2', {}, 'Forecast values'), table([{ h: 'Month', f: (x, i) => x }, { h: 'Rolling', num: 1, f: x => fmt(r.forecast.rolling[r.forecast.months.indexOf(x)]) }, { h: 'Seasonal', num: 1, f: x => (r.forecast.seasonal ? fmt(r.forecast.seasonal[r.forecast.months.indexOf(x)]) : 'n/a') }], r.forecast.months)) : null);
 };
 
 pages.sap = async el => {
-  const pv = await api('/sap/preview'), batches = await api('/sap/batches');
+  const includeImported = !!S.tab.sapImported, includeExported = !!S.tab.sapReexport;
+  const options = { includeImported, includeExported };
+  const pv = await api('/sap/preview' + qs({ includeImported: includeImported ? '1' : '', includeExported: includeExported ? '1' : '' }));
+  const batches = await api('/sap/batches');
   const body = h('div', {});
+  const exportList = h('div', {});
+  let exportPage = S.tab.sapExportPage || 0;
+  const drawExportRows = () => {
+    const pageSize = 5, pageCount = Math.max(1, Math.ceil(pv.rows.length / pageSize));
+    exportPage = Math.min(exportPage, pageCount - 1);
+    const shown = pv.rows.slice(exportPage * pageSize, (exportPage + 1) * pageSize);
+    exportList.replaceChildren(h('div', { class: 'pagination' }, h('span', { class: 'muted' }, `Showing ${exportPage * pageSize + 1}–${exportPage * pageSize + shown.length} of ${pv.rows.length} export rows`),
+      h('div', { class: 'pagination-actions' }, h('button', { class: 'ghost', disabled: exportPage === 0, onclick: () => { exportPage--; S.tab.sapExportPage = exportPage; drawExportRows(); } }, 'Previous'),
+        h('span', { class: 'muted' }, `Page ${exportPage + 1} of ${pageCount}`),
+        h('button', { class: 'ghost', disabled: exportPage + 1 >= pageCount, onclick: () => { exportPage++; S.tab.sapExportPage = exportPage; drawExportRows(); } }, 'Next'))),
+      table(pv.columns.map(c => ({ h: c, f: r => (c === 'MissingOrToConfirm' ? h('span', { style: 'font-size:11px;color:var(--warn)' }, r[c]) : r[c]) })), shown));
+  };
+  if (pv.rows.length) drawExportRows();
+  const excludedList = h('div', {});
+  let excludedTerm = '', excludedPage = S.tab.sapExcludedPage || 0;
+  const drawExcluded = () => {
+    const q = excludedTerm.trim().toLowerCase();
+    const rows = pv.excluded.filter(r => !q || `${r.request_id} ${r.type} ${r.reason}`.toLowerCase().includes(q));
+    const pageSize = 5, pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+    excludedPage = Math.min(excludedPage, pageCount - 1);
+    const shown = rows.slice(excludedPage * pageSize, (excludedPage + 1) * pageSize);
+    excludedList.replaceChildren(h('div', { class: 'pagination' }, h('span', { class: 'muted' }, `${rows.length} of ${pv.excluded.length} excluded requests · ${rows.length ? `showing ${excludedPage * pageSize + 1}–${excludedPage * pageSize + shown.length}` : 'no matches'}`),
+      h('div', { class: 'pagination-actions' }, h('button', { class: 'ghost', disabled: excludedPage === 0, onclick: () => { excludedPage--; S.tab.sapExcludedPage = excludedPage; drawExcluded(); } }, 'Previous'),
+        h('span', { class: 'muted' }, `Page ${excludedPage + 1} of ${pageCount}`),
+        h('button', { class: 'ghost', disabled: excludedPage + 1 >= pageCount, onclick: () => { excludedPage++; S.tab.sapExcludedPage = excludedPage; drawExcluded(); } }, 'Next'))),
+      table([{ h: 'Request', f: r => r.request_id }, { h: 'Type', f: r => r.type }, { h: 'Why', f: r => r.reason }], shown));
+  };
+  if (pv.excluded.length) drawExcluded();
+  const excludedPanel = pv.excluded.length ? h('div', { class: 'card' }, h('h2', {}, 'Approved but not exportable'),
+    h('label', { class: 'exclusion-search' }, 'Search excluded requests', h('input', { type: 'search', placeholder: 'Request ID, type, or reason…', oninput: debounce(e => { excludedTerm = e.target.value; excludedPage = 0; S.tab.sapExcludedPage = excludedPage; drawExcluded(); }) })), excludedList) : null;
   async function gen() {
     try {
-      const r = await api('/sap/export', {});
+      const r = await api('/sap/export', options);
       const blob = new Blob([r.csv], { type: 'text/csv' }), a = h('a', { href: URL.createObjectURL(blob), download: r.fileName });
       document.body.append(a); a.click(); a.remove();
       toast(`${r.fileName}: ${r.rows} rows generated (file only — not imported into SAP B1)`); route();
@@ -429,9 +545,12 @@ pages.sap = async el => {
   }
   el.append(h('h1', {}, 'SAP B1 export'), h('p', { class: 'sub' }, 'Business Partner rows from approved or applied create/update requests.'),
     h('div', { class: 'note warn' }, pv.statement + ' Column names follow common B1 Business Partner import fields; confirm them against your own import template.'),
-    h('div', { class: 'card' }, h('button', { disabled: !pv.rows.length, onclick: gen }, `Generate CSV (${pv.rows.length} row${pv.rows.length === 1 ? '' : 's'})`), h('span', { class: 'muted' }, ' Rows already exported are excluded next time.')),
-    pv.rows.length ? h('div', { class: 'card' }, h('h2', {}, 'Preview'), table(pv.columns.map(c => ({ h: c, f: r => (c === 'MissingOrToConfirm' ? h('span', { style: 'font-size:11px;color:var(--warn)' }, r[c]) : r[c]) })), pv.rows)) : h('div', { class: 'card' }, 'No approved or applied create/update requests are waiting to be exported. Approve a request first.'),
-    pv.excluded.length ? h('div', { class: 'card' }, h('h2', {}, 'Approved but not exportable'), table([{ h: 'Request', f: r => r.request_id }, { h: 'Type', f: r => r.type }, { h: 'Why', f: r => r.reason }], pv.excluded)) : null,
+    h('div', { class: 'card' }, h('h2', {}, 'Export options'),
+      h('label', { class: 'export-option' }, h('input', { type: 'checkbox', checked: includeImported, onchange: e => { S.tab.sapImported = e.target.checked; route(); } }), 'Include source-imported requests marked applied (use only after confirming they are not already in SAP B1)'),
+      h('label', { class: 'export-option' }, h('input', { type: 'checkbox', checked: includeExported, onchange: e => { S.tab.sapReexport = e.target.checked; route(); } }), 'Include requests from previous export batches (re-generate rows)')),
+    h('div', { class: 'card' }, h('button', { disabled: !pv.rows.length, onclick: gen }, `Generate CSV (${pv.rows.length} row${pv.rows.length === 1 ? '' : 's'})`), h('span', { class: 'muted' }, 'Previously exported rows are excluded unless selected above.')),
+    pv.rows.length ? h('div', { class: 'card' }, h('h2', {}, 'Preview'), exportList) : h('div', { class: 'card' }, 'No exportable rows under the current options. Approve a request or adjust the export options above.'),
+    excludedPanel,
     batches.length ? h('div', { class: 'card' }, h('h2', {}, 'Generated files'), table([{ h: '#', f: b => b.id }, { h: 'File', f: b => b.file_name }, { h: 'Rows', num: 1, f: b => b.row_count }, { h: 'When', f: b => b.created_at.replace('T', ' ').slice(0, 16) }, { h: 'Note', f: b => b.note }], batches)) : null, body);
 };
 
@@ -439,18 +558,26 @@ pages.data = async el => {
   const [v, fi, cap, pr] = await Promise.all([api('/validate'), api('/findings'), api('/capabilities'), api('/profile')]);
   const m = S.meta;
   const colour = { ok: 'good', warn: 'warn', info: 'info' };
-  el.append(h('h1', {}, 'Data & quality'), h('p', { class: 'sub' }, 'What the source CSV contains, what the app derived from it, and what it cannot support.'),
-    h('div', { class: 'grid g2' },
+  const panels = {
+    source: h('div', { class: 'grid g2' },
       h('div', { class: 'card' }, h('h2', {}, 'Source'), h('p', {}, h('b', {}, m.source.file), ` · ${n0(m.source.rowCount)} rows · sha256 ${m.source.hash.slice(0, 12)}…`), h('p', { class: 'muted' }, 'Read-only. Never rewritten by the app.'),
         table([{ h: 'Stacked table', f: r => r[0] }, { h: 'Rows', num: 1, f: r => n0(r[1]) }], Object.entries(m.source.tables)),
         h('button', { class: 'ghost', onclick: async () => { const r = await api('/source/refresh', {}); toast(`Refresh: +${r.importResult.requestsAdded} requests, +${r.importResult.auditAdded} audit events (existing rows untouched)`); route(); } }, 'Re-read CSV & import new workflow rows')),
       h('div', { class: 'card' }, h('h2', {}, 'App data (separate from CSV)'), table([{ h: 'Store', f: r => r[0] }, { h: 'Count', num: 1, f: r => r[1] }], [
         ...m.appData.requests.map(r => [`requests (${r.source})`, r.n]), ['new customers created', m.appData.newCustomers], ['field updates applied', m.appData.fieldOverrides], ['canonical (merge) overrides', m.appData.canonicalOverrides], ['deactivated customers', m.appData.inactive]]),
         h('h3', {}, 'Import history'), table([{ h: 'When', f: r => r.at.slice(0, 16).replace('T', ' ') }, { h: 'Requests +', num: 1, f: r => r.requests_added }, { h: 'Audit +', num: 1, f: r => r.audit_added }], m.imports))),
-    h('div', { class: 'card' }, h('h2', {}, `Validation (${v.checks.filter(c => c.pass).length}/${v.checks.length} pass)`), table([{ h: '', f: c => h('span', { class: 'pill ' + (c.pass ? 'good' : 'bad') }, c.pass ? 'PASS' : 'FAIL') }, { h: 'Check', f: c => c.name }, { h: 'Detail', f: c => c.detail }], v.checks)),
-    h('div', { class: 'card' }, h('h2', {}, 'Findings in the data'), table([{ h: '', f: x => h('span', { class: 'pill ' + (colour[x.severity] || '') }, x.severity) }, { h: 'Area', f: x => x.area }, { h: 'Finding', f: x => x.text }], fi)),
-    h('div', { class: 'card' }, h('h2', {}, 'What the data can and cannot support'), table([{ h: 'Feature', f: x => x.feature }, { h: 'Status', f: x => h('span', { class: 'pill ' + ({ supported: 'good', partial: 'warn', missing: 'bad' }[x.status] || '') }, x.status) }, { h: 'Basis / gap', f: x => x.basis }], cap)),
-    h('div', { class: 'card' }, h('h2', {}, 'Column profile'), ...Object.entries(pr).map(([t, p]) => h('details', {}, h('summary', {}, `${t} — ${n0(p.rows)} rows`), table([{ h: 'Column', f: c => c.name }, { h: 'Non-empty', num: 1, f: c => c.nonEmpty }, { h: 'Missing', num: 1, f: c => c.missing }, { h: 'Unique', num: 1, f: c => c.unique }, { h: 'Sample', f: c => c.sample.join(' | ').slice(0, 80) }], p.columns)))));
+    validation: h('div', { class: 'card' }, h('h2', {}, `Validation (${v.checks.filter(c => c.pass).length}/${v.checks.length} pass)`), table([{ h: '', f: c => h('span', { class: 'pill ' + (c.pass ? 'good' : 'bad') }, c.pass ? 'PASS' : 'FAIL') }, { h: 'Check', f: c => c.name }, { h: 'Detail', f: c => c.detail }], v.checks)),
+    findings: h('div', {},
+      h('div', { class: 'card' }, h('h2', {}, 'Findings in the data'), table([{ h: '', f: x => h('span', { class: 'pill ' + (colour[x.severity] || '') }, x.severity) }, { h: 'Area', f: x => x.area }, { h: 'Finding', f: x => x.text }], fi)),
+      h('div', { class: 'card' }, h('h2', {}, 'What the data can and cannot support'), table([{ h: 'Feature', f: x => x.feature }, { h: 'Status', f: x => h('span', { class: 'pill ' + ({ supported: 'good', partial: 'warn', missing: 'bad' }[x.status] || '') }, x.status) }, { h: 'Basis / gap', f: x => x.basis }], cap))),
+    profile: h('div', { class: 'card' }, h('h2', {}, 'Column profile'), ...Object.entries(pr).map(([t, p]) => h('details', {}, h('summary', {}, `${t} — ${n0(p.rows)} rows`), table([{ h: 'Column', f: c => c.name }, { h: 'Non-empty', num: 1, f: c => c.nonEmpty }, { h: 'Missing', num: 1, f: c => c.missing }, { h: 'Unique', num: 1, f: c => c.unique }, { h: 'Sample', f: c => c.sample.join(' | ').slice(0, 80) }], p.columns)))),
+  };
+  let active = S.tab.data || 'source';
+  const controls = h('div', { class: 'filters data-tabs' }), content = h('div', {});
+  const drawTabs = () => controls.replaceChildren(seg([['source', 'Source & app'], ['validation', 'Validation'], ['findings', 'Findings & limits'], ['profile', 'Column profile']], active, key => { active = key; S.tab.data = key; drawTabs(); content.replaceChildren(panels[key]); }));
+  el.append(h('h1', {}, 'Data & quality'), h('p', { class: 'sub' }, 'What the source CSV contains, what the app derived from it, and what it cannot support.'), controls, content);
+  drawTabs();
+  content.replaceChildren(panels[active]);
 };
 
 // ---------- router ----------
@@ -475,7 +602,5 @@ addEventListener('hashchange', route);
   $('#role').onchange = e => store.set('role', e.target.value);
   $('#actor').value = store.get('actor', '');
   $('#actor').oninput = e => store.set('actor', e.target.value);
-  const c = S.meta.coverage;
-  $('#banner').textContent = `Source of truth: ${S.meta.source.file} (read-only) · ${S.meta.source.tables.customers} customers · ${S.meta.source.tables.purchase_orders} POs ${c.firstDate} → ${c.lastDate} (${c.months} months). Workflow data is stored separately in data/app.db.`;
   route();
 })().catch(e => { document.body.append(h('pre', {}, 'Failed to start: ' + e.message)); });

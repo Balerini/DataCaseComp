@@ -36,6 +36,25 @@ main { max-width: 1280px; margin: 0 auto; padding: 16px; }
 h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 0 0 8px; } h3 { font-size: 13px; margin: 12px 0 6px; color: var(--ink-2); }
 .sub { color: var(--ink-2); margin: 0 0 14px; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+.story { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: linear-gradient(135deg, var(--surface), color-mix(in srgb, var(--accent) 7%, var(--surface))); }
+.story-head { display: flex; gap: 16px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.story-head h2 { font-size: 18px; }
+.story-head .sub { margin: 0; }
+.story td:last-child { color: var(--accent); font-weight: 650; white-space: nowrap; }
+.story th { background: var(--surface-2); }
+.status-tabs { overflow-x: auto; }
+.status-tabs .seg button { white-space: nowrap; }
+.data-tabs { overflow-x: auto; margin-bottom: 12px; }
+.data-tabs .seg button { white-space: nowrap; }
+.pagination, .pagination-actions { display: flex; align-items: center; gap: 10px; }
+.pagination { justify-content: space-between; margin: 8px 0 12px; }
+.pagination-actions { flex-wrap: wrap; }
+.group-filters label:first-child { flex: 1; min-width: 240px; }
+.export-option { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; margin: 8px 0; color: var(--ink-2); }
+.export-option input { margin-top: 3px; }
+.exclusion-search { display: flex; flex-direction: column; gap: 4px; max-width: 420px; margin: 8px 0 12px; font-size: 12px; color: var(--ink-2); }
+@media (max-width: 700px) { .story-head { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 600px) { .pagination { align-items: flex-start; flex-direction: column; } }
 .grid { display: grid; gap: 12px; }
 .g2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
 .g4 { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }

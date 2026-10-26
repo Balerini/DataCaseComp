@@ -111,7 +111,7 @@ function createApp({ csv = SOURCE_CSV, dbFile } = {}) {
     'GET /api/analytics/dropoff': ({ q }) => analytics.dropOff(model, filt(q), basisOf(q), Number(q.get('days') || 90)),
     'GET /api/analytics/crosssell': ({ q }) => analytics.crossSell(model, filt(q), basisOf(q)),
     'GET /api/analytics/dedup-impact': ({ q }) => analytics.dedupImpact(model, filt(q), Number(q.get('days') || 90)),
-    'GET /api/forecast': ({ q }) => forecast(model, filt(q), { metric: q.get('metric') || 'value', holdout: Number(q.get('holdout') || 3), horizon: Number(q.get('horizon') || 3) }),
+    'GET /api/forecast': ({ q }) => forecast(model, filt(q), { metric: q.get('metric') || 'value', basis: q.get('basis') || 'dedup', holdout: Number(q.get('holdout') || 3), horizon: Number(q.get('horizon') || 3) }),
 
     'GET /api/forecast/summary': ({ q }) => {
       const countries = [...new Set(model.pos.map(p => p.country))].sort();

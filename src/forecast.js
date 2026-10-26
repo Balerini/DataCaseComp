@@ -4,6 +4,7 @@
 //   seasonal : value one year earlier x level ratio (recent k months / same k months a year before)
 // Evaluation: hold out the last `holdout` months, fit on the rest, score WAPE / MAPE on actuals.
 const { filterPos, coverage, monthly, shiftMonth } = require('./analytics');
+const { keyOf } = require('./model');
 
 const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
 const sum = a => a.reduce((s, x) => s + x, 0);
@@ -85,17 +86,32 @@ function forecastSeries(series, months, { holdout = 3, horizon = 3, window = 3 }
 function forecast(m, f = {}, opts = {}) {
   const cov = coverage(m);
   const pos = filterPos(m, { ...f, from: undefined, to: undefined });
-  const metric = opts.metric === 'pos' ? 'pos' : 'value';
-  const rows = monthly(pos, cov.monthList);
-  const series = rows.map(r => r[metric]);
+  const metric = ['pos', 'customers'].includes(opts.metric) ? opts.metric : 'value';
+  const basis = opts.basis === 'raw' ? 'raw' : 'dedup';
+  let rows;
+  if (metric === 'customers') {
+    const customerKey = keyOf(m, basis), monthCustomers = new Map(cov.monthList.map(month => [month, new Set()]));
+    for (const p of pos) monthCustomers.get(p.month)?.add(customerKey(p.customer_id));
+    rows = cov.monthList.map(month => ({ month, customers: monthCustomers.get(month).size }));
+  } else rows = monthly(pos, cov.monthList);
+  const series = rows.map(r => metric === 'customers' ? r.customers : r[metric]);
   const out = forecastSeries(series, cov.monthList, opts);
+  const split = Math.max(0, series.length - 3), recent = series.slice(split), prior = series.slice(Math.max(0, split - 3), split);
+  const recentTotal = sum(recent), priorTotal = sum(prior);
   return {
-    metric, filters: f,
-    history: rows.map(r => ({ month: r.month, value: r[metric] })),
+    metric, basis, filters: f,
+    history: rows.map(r => ({ month: r.month, value: metric === 'customers' ? r.customers : r[metric] })),
+    growth: metric === 'customers' && prior.length === 3 ? {
+      recentMonths: `${cov.monthList[split]}..${cov.monthList.at(-1)}`,
+      priorMonths: `${cov.monthList[split - 3]}..${cov.monthList[split - 1]}`,
+      recent: recentTotal / 3, prior: priorTotal / 3, change: priorTotal ? (recentTotal - priorTotal) / priorTotal : null,
+    } : null,
     coverage: { firstDate: cov.firstDate, lastDate: cov.lastDate, months: cov.months, enoughFor24Months: cov.enoughFor24Months },
     requested24Months: !cov.enoughFor24Months
       ? `Source history is ${cov.months} months (${cov.firstDate} to ${cov.lastDate}); a 24-month history is not available and none was fabricated.` : null,
-    dedupNote: 'Deduplication re-assigns POs between customer records but does not change monthly PO totals, so this forecast is identical raw vs deduplicated at country/product/total level.',
+    dedupNote: metric === 'customers'
+      ? 'Active customers = distinct customer identities with at least one PO in a month. Raw counts use source customer IDs; deduplicated counts use golden customer IDs. Growth compares the latest 3 months with the prior 3 months; forecast errors use the final 3 months as holdout.'
+      : 'This forecasts total monthly PO value or count. Deduplication re-assigns POs between customer identities but does not change those totals, so raw and deduplicated forecast results are identical at country/product/total level.',
     ...out,
   };
 }

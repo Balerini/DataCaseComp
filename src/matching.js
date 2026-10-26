@@ -3,7 +3,9 @@
 const { normUen } = require('./rules');
 
 const LEGAL = new Set(['pte', 'ltd', 'limited', 'sdn', 'bhd', 'berhad', 'co', 'company', 'joint', 'stock', 'jsc',
-  'pt', 'tbk', 'cv', 'inc', 'corp', 'corporation', 'llc', 'plc', 'public', 'private', 'llp', 'the']);
+  'pt', 'tbk', 'cv', 'inc', 'corp', 'corporation', 'llc', 'plc', 'public', 'private', 'llp', 'the',
+  'sdnn' // common extra-n typo for the Malaysian legal suffix Sdn.
+]);
 const ADDR = { jl: 'jalan', jln: 'jalan', rd: 'road', st: 'street', ave: 'avenue', ind: 'industrial', blvd: 'boulevard', pk: 'park' };
 
 const strip = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
