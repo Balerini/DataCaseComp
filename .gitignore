@@ -2,3 +2,5 @@ data/*.db
 data/*.db-*
 node_modules/
 exports/
+data/.mdm.key
+data/*.bak

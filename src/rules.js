@@ -1,30 +1,32 @@
 'use strict';
-// Approval routing (from config_approval_rules) and field validation (from config_domains).
+// Approval routing (rules stored in the approval_rules table) and field validation (domain_fields table).
 
-/** Evaluate one rule `condition` against a request context. Returns true/false/null (null = cannot evaluate). */
+/**
+ * Evaluate one rule `condition` against a request context. Returns true / false / null (null = cannot evaluate).
+ * ctx: { request_type, country, field?, values?: {payload fields}, entitiesDiffer?, openPoValueSgd? }
+ * Supported: *, `field in (a, b)`, `<key> = <value>`, `<key> in (a, b)` (key = any payload field, or country/field),
+ *            `entities differ`, `open_po_value_sgd > N`.
+ */
 function evalCondition(cond, ctx) {
   const c = (cond || '*').trim();
   if (c === '*') return true;
+  const look = k => (k === 'field' ? ctx.field : k === 'country' ? ctx.country : ctx.values?.[k]);
   let m;
-  if ((m = c.match(/^field in \((.+)\)$/))) {
-    if (!ctx.field) return false;
-    return m[1].split(',').map(s => s.trim()).includes(ctx.field);
-  }
-  if ((m = c.match(/^field = (\w+)$/))) return ctx.field === m[1];
-  if ((m = c.match(/^country = (\w+)$/))) return ctx.country === m[1];
   if (c === 'entities differ') return !!ctx.entitiesDiffer;
   if ((m = c.match(/^open_po_value_sgd > (\d+(?:\.\d+)?)$/))) return (ctx.openPoValueSgd ?? 0) > Number(m[1]);
+  if ((m = c.match(/^(\w+) in \((.+)\)$/))) {
+    const v = look(m[1]);
+    return v != null && m[2].split(',').map(s => s.trim()).includes(String(v));
+  }
+  if ((m = c.match(/^(\w+) = (\S+)$/))) { const v = look(m[1]); return v != null && String(v) === m[2]; }
   return null;
 }
 
-/**
- * Build the approval path for a request.
- * ctx: { request_type, country, field?, entitiesDiffer?, openPoValueSgd? }
- * Returns { steps: [{step, role, rule_id, sla_hours, note}], unevaluable: [rule_id] }
- */
+/** Build the approval path. Rules are DB rows: { rule_id, domain, country, request_type, condition, step, approver_role, sla_hours, notes }. */
 function buildApprovalPath(rules, ctx) {
   const steps = [], unevaluable = [];
   for (const r of rules) {
+    if (r.domain && ctx.domain && r.domain !== ctx.domain) continue;
     if (r.country !== '*' && r.country !== ctx.country) continue;
     if (r.request_type !== '*' && r.request_type !== ctx.request_type) continue;
     const ok = evalCondition(r.condition, ctx);
@@ -36,21 +38,15 @@ function buildApprovalPath(rules, ctx) {
   return { steps: steps.filter(s => !seen.has(s.role) && seen.add(s.role)), unevaluable };
 }
 
-/** Parse config_domains.validation into a checker. Supports enum "A|B|C" and regex "^...$". */
-function makeValidator(def) {
-  const v = def.validation;
-  if (def.data_type === 'enum') { const set = new Set(v.split('|')); return x => set.has(x); }
-  const re = new RegExp(v);
+/** Turn a domain_fields row into a checker. enum: "A|B|C"; otherwise a regular expression. */
+function fieldTest(def) {
+  if (!def.validation) return () => true;
+  if (def.data_type === 'enum') { const set = new Set(def.validation.split('|')); return x => set.has(x); }
+  const re = new RegExp(def.validation);
   return x => re.test(x);
-}
-
-function buildValidators(domains) {
-  const out = {};
-  for (const d of domains) (out[d.domain] ??= {})[d.field_name] = { ...d, test: makeValidator(d) };
-  return out;
 }
 
 /** Registration numbers appear with separators in the source (e.g. 7173-327540153); normalise before validating. */
 const normUen = s => String(s || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
 
-module.exports = { evalCondition, buildApprovalPath, buildValidators, normUen };
+module.exports = { evalCondition, buildApprovalPath, fieldTest, normUen };

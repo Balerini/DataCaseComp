@@ -35,8 +35,14 @@ const moneyFull = x => 'S$' + nf.format(Math.round(x));
 const pct = (x, d = 1) => (x == null ? '–' : (x * 100).toFixed(d) + '%');
 const sgn = x => (x == null ? '–' : (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%');
 
+// "Acting as": the position (and optional region) chosen in the header. It is declared, not authenticated; the server still
+// enforces what each position can see and do. Kept per browser tab so two tabs can act as two positions.
+const ACT = { role: '', region: 'ALL' };
+const actStore = { get: k => { try { return sessionStorage.getItem('mdm_' + k) || ''; } catch { return ''; } }, set: (k, v) => { try { sessionStorage.setItem('mdm_' + k, v); } catch { /* ignore */ } } };
 async function api(path, opts) {
-  const r = await fetch('/api' + path, opts && { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(opts) });
+  const headers = { 'x-role': encodeURIComponent(ACT.role), 'x-region': encodeURIComponent(ACT.region) };
+  if (opts) headers['content-type'] = 'application/json';
+  const r = await fetch('/api' + path, opts ? { method: 'POST', headers, body: JSON.stringify(opts) } : { headers });
   const j = await r.json();
   if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; e.data = j; throw e; }
   return j;
@@ -50,7 +56,7 @@ const COUNTRY_COLOR = { ID: 'var(--s1)', MY: 'var(--s2)', SG: 'var(--s3)', TH: '
 const COUNTRY_NAME = { SG: 'Singapore', MY: 'Malaysia', ID: 'Indonesia', TH: 'Thailand', VN: 'Vietnam' };
 const statusPill = st => h('span', { class: 'pill ' + ({ applied: 'good', approved: 'good', rejected: 'bad', pending_approval: 'warn', draft: '' }[st] || '') }, st.replace('_', ' '));
 
-const S = { meta: null, basis: 'dedup', f: { country: '', product: '', entity: '' }, tab: {} };
+const S = { me: null, meta: null, basis: 'dedup', f: { country: '', product: '', entity: '' }, tab: {} };
 const store = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } } };
 
 // ---------- charts ----------
@@ -183,106 +189,6 @@ pages.overview = async el => {
   load(wrap); await draw();
 };
 
-pages.intake = async el => {
-  const o = S.meta.options;
-  const F = { request_type: 'create_customer', entity: '', country: '', name: '', uen: '', address: '', target: null, field: 'address', new_value: '', merge_ids: [], reason: '', dup_note: '', dup_ack: false };
-  const out = h('div', {}), formBox = h('div', { class: 'card' }), side = h('div', {});
-  let touched = false, last = null, token = 0;
-  const body = (submit = true) => ({
-    request_type: F.request_type, entity: F.entity, country: F.country, name: F.name, uen: F.uen, address: F.address,
-    target_customer_id: F.target?.customer_id, field: F.field, new_value: F.new_value, merge_ids: F.merge_ids, reason: F.reason,
-    requested_by: $('#actor').value.trim(), submit, duplicate_ack: F.dup_ack ? 'not_duplicate' : undefined, duplicate_note: F.dup_note,
-  });
-  const run = debounce(async () => {
-    const my = ++token;
-    try { last = await api('/intake/preview', body()); } catch (e) { last = { errors: { _: e.message }, duplicates: [], route: null }; }
-    if (my === token) drawSide();
-  }, 250);
-  const field = (label, key, extra = {}) => h('label', { class: extra.full ? 'full' : '' }, label + (extra.req ? ' *' : ''),
-    extra.opts ? sel(extra.opts, F[key], v => { F[key] = v; run(); drawForm(); }, extra.any)
-      : (extra.area ? h('textarea', { rows: 2, value: F[key], oninput: e => { F[key] = e.target.value; run(); } }) : h('input', { value: F[key], placeholder: extra.ph || '', oninput: e => { F[key] = e.target.value; run(); } })),
-    h('span', { class: 'err', id: 'e_' + key }));
-  const picker = () => {
-    const res = h('div', {}), inp = h('input', { placeholder: 'Search id / name / registration no. / address…', oninput: debounce(async e => {
-      const r = await api('/customers' + qs({ q: e.target.value, limit: 8 }));
-      res.replaceChildren(table([{ h: 'ID', f: c => c.customer_id }, { h: 'Name', f: c => c.name }, { h: 'Ctry', f: c => c.country }, { h: 'Golden', f: c => c.golden_id }, { h: 'UEN', f: c => c.uen || '–' }], r.rows,
-        { onRow: c => { F.target = c; F.merge_ids = [c.customer_id]; run(); drawForm(); } }));
-    }) });
-    return h('div', { class: 'full' }, h('label', {}, 'Customer *', inp), F.target ? h('div', { class: 'note' }, `Selected: ${F.target.customer_id} · ${F.target.name} · ${F.target.entity}/${F.target.country} · ${F.target.golden_id}`) : null, res);
-  };
-  const drawForm = () => {
-    const t = F.request_type;
-    const fields = [h('label', {}, 'Request type', sel(o.requestTypes.map(x => [x, x.replace('_', ' ')]), t, v => { F.request_type = v; F.target = null; F.merge_ids = []; run(); drawForm(); }))];
-    if (t === 'create_customer') fields.push(field('Owning entity', 'entity', { opts: o.entities, any: 'Select…', req: 1 }), field('Country', 'country', { opts: o.countries.map(c => [c, `${c} – ${COUNTRY_NAME[c]}`]), any: 'Select…', req: 1 }),
-      field('Registered legal name', 'name', { req: 1, full: 1, ph: 'e.g. Orchid Industrial Pte. Ltd.' }), field('Registration no. (UEN / SSM / NIB / MST…)', 'uen', { ph: o.fieldRules.uen.description }), field('Registered address', 'address', { req: 1, full: 1, area: 1 }));
-    else {
-      fields.push(picker());
-      if (t === 'update_customer') fields.push(field('Field to change', 'field', { opts: o.updatableFields }), field('New value', 'new_value', { req: 1, full: 1 }));
-      if (t === 'merge_customer') fields.push(mergePicker());
-      if (t === 'deactivate_customer') fields.push(field('Reason', 'reason', { req: 1, full: 1 }));
-    }
-    formBox.replaceChildren(h('h2', {}, 'New master-data request'), h('div', { class: 'form' }, fields));
-    drawErrors();
-  };
-  const mergeBox = h('div', { class: 'full' });
-  const mergePicker = () => {
-    if (!F.target) return h('p', { class: 'muted full' }, 'Select the first record, then tick the records to merge into it.');
-    (async () => {
-      const g = await api('/customers/' + F.target.customer_id);
-      const cands = await api('/duplicates/check', { name: F.target.name, uen: F.target.uen, address: F.target.address, country: F.target.country, entity: F.target.entity, request_type: 'create_customer' });
-      const seen = new Set([F.target.customer_id]);
-      const list = [...g.groupMembers.filter(m => !seen.has(m.customer_id)).map(m => ({ ...m, why: 'same golden id ' + g.golden_id })), ...cands.duplicates.filter(d => d.customer_id !== F.target.customer_id && !g.groupMembers.some(m => m.customer_id === d.customer_id)).map(d => ({ ...d, why: `matcher ${pct(d.score, 0)} (${d.class})` }))];
-      mergeBox.replaceChildren(h('label', {}, 'Merge these records into ' + F.target.customer_id + ' (same country only)'), list.length ? list.map(m => h('label', { style: 'flex-direction:row;gap:8px;align-items:center' },
-        h('input', { type: 'checkbox', checked: F.merge_ids.includes(m.customer_id), onchange: e => { F.merge_ids = e.target.checked ? [...F.merge_ids, m.customer_id] : F.merge_ids.filter(x => x !== m.customer_id); run(); } }),
-        `${m.customer_id} · ${m.name} · ${m.entity}/${m.country} — ${m.why}`)) : h('p', { class: 'muted' }, 'No candidate records found for this customer.'));
-    })();
-    return mergeBox;
-  };
-  const drawErrors = () => {
-    const errs = last?.errors || {};
-    for (const [k, v] of Object.entries(errs)) { const n = $('#e_' + k); if (n && (touched || F[k])) n.textContent = v; }
-  };
-  const drawSide = () => {
-    drawErrors();
-    const d = last, nodes = [];
-    if (d?.route) {
-      nodes.push(h('div', { class: 'card' }, h('h2', {}, 'Approval route'),
-        d.route.steps.length ? h('div', { class: 'steps' }, d.route.steps.flatMap((st, i) => [i ? '›' : null, h('span', { class: 'step', title: `${st.rule_id}: ${st.note} · SLA ${st.sla_hours}h` }, st.role)])) : h('p', { class: 'muted' }, 'No rule matched.'),
-        d.route.context.openPoValueSgd != null ? h('p', { class: 'muted', style: 'font-size:12px' }, `Open-PO value proxy (POs in last ${d.route.openPoWindowDays} days): ${moneyFull(d.route.context.openPoValueSgd)} — the source has no PO status, so R07 uses this proxy.`) : null));
-    }
-    if (d?.duplicates?.length) {
-      nodes.push(h('div', { class: 'card' }, h('h2', {}, 'Possible existing records'),
-        d.duplicates.map(c => h('div', { class: 'cand ' + c.class }, h('div', {}, h('b', {}, c.name), ' ', h('span', { class: 'pill ' + (c.class === 'duplicate' ? 'bad' : 'warn') }, `${c.class} · ${pct(c.score, 0)}`)),
-          h('div', { class: 'muted' }, `${c.customer_id} · ${c.entity}/${c.country} · ${c.uen || 'no reg. no.'} · ${c.golden_id}${c.origin === 'app' ? ' · created in app' : ''}`), h('div', { class: 'muted' }, c.address),
-          h('div', { style: 'font-size:12px;margin-top:4px' }, c.reasons.join(' · '))))));
-    } else if (d && F.request_type === 'create_customer' && (F.name || F.uen)) nodes.push(h('div', { class: 'note good' }, 'No similar customer found in the master data.'));
-    side.replaceChildren(...nodes);
-    const strong = (d?.duplicates || []).some(c => c.class === 'duplicate') && F.request_type === 'create_customer';
-    if (strong) side.append(h('div', { class: 'card' }, h('div', { class: 'note bad' }, 'A likely duplicate exists. Do not create a new record unless this is genuinely a different company.'),
-      h('label', { style: 'flex-direction:row;gap:8px;align-items:center' }, h('input', { type: 'checkbox', checked: F.dup_ack, onchange: e => { F.dup_ack = e.target.checked; } }), 'I confirm this is a different company'),
-      h('label', {}, 'Why is it different? *', h('input', { value: F.dup_note, oninput: e => { F.dup_note = e.target.value; } }))));
-  };
-  const submitRow = h('div', { class: 'card' });
-  const drawSubmit = () => submitRow.replaceChildren(h('button', { onclick: () => go(true) }, 'Submit for approval'), ' ', h('button', { class: 'ghost', onclick: () => go(false) }, 'Save as draft'),
-    h('p', { class: 'muted', style: 'font-size:12px' }, 'Requests are stored in the app database (data/app.db), separate from the source CSV. “Requested by” uses the “Acting as” box in the header.'));
-  async function go(submit) {
-    touched = true;
-    if (!$('#actor').value.trim()) { toast('Enter your user id in “Acting as” (top right).'); $('#actor').focus(); return; }
-    try {
-      const r = await api('/requests', body(submit));
-      toast(`Created ${r.request_id} (${r.status.replace('_', ' ')})`);
-      location.hash = '#requests/' + r.request_id;
-    } catch (e) {
-      if (e.data?.errors) { last = { ...last, errors: e.data.errors }; drawErrors(); toast('Please fix the highlighted fields.'); }
-      else if (e.status === 409 && e.data?.duplicates) { last = { ...last, duplicates: e.data.duplicates }; drawSide(); toast(e.message); }
-      else toast(e.message);
-    }
-  }
-  el.append(h('h1', {}, 'Intake'), h('p', { class: 'sub' }, 'Dropdowns and validation rules come from config_domains; duplicate checks run against every customer in the dataset (plus anything created in the app).'),
-    h('div', { class: 'grid g2' }, h('div', {}, formBox, submitRow), side));
-  drawForm(); drawSubmit(); run();
-};
-
 pages.duplicates = async el => {
   const [ev, cl, gr] = await Promise.all([api('/duplicates/evaluation'), api('/duplicates/clusters'), api('/duplicates/groups')]);
   let term = '', countryFilter = '', entityFilter = '', mode = S.tab.dup || 'groups', page = S.tab.dupPage || 0;
@@ -325,86 +231,6 @@ pages.duplicates = async el => {
   drawTabs();
   drawContent();
 };
-
-pages.requests = async (el, arg) => {
-  const f = { status: S.tab.rs ?? 'pending_approval', type: '', role: '', q: '' };
-  const listBox = h('div', {});
-  const statusControls = h('div', { class: 'filters status-tabs' });
-  let page = S.tab.reqPage || 0;
-  const draw = async () => {
-    const rows = await api('/requests' + qs(f));
-    const pageSize = 15, pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
-    page = Math.min(page, pageCount - 1);
-    const shown = rows.slice(page * pageSize, (page + 1) * pageSize);
-    const controls = h('div', { class: 'pagination' }, h('span', { class: 'muted' }, rows.length ? `Showing ${page * pageSize + 1}–${page * pageSize + shown.length} of ${rows.length} requests` : 'No matching requests'),
-      h('div', { class: 'pagination-actions' }, h('button', { class: 'ghost', disabled: page === 0, onclick: () => { page--; S.tab.reqPage = page; draw(); } }, 'Previous'),
-        h('span', { class: 'muted' }, `Page ${page + 1} of ${pageCount}`),
-        h('button', { class: 'ghost', disabled: page + 1 >= pageCount, onclick: () => { page++; S.tab.reqPage = page; draw(); } }, 'Next')));
-    listBox.replaceChildren(controls, table([
-      { h: 'Request', f: r => h('span', {}, r.request_id, ' ', r.source === 'app' ? h('span', { class: 'pill info' }, 'new') : null) }, { h: 'Type', f: r => r.request_type.replace('_', ' ') },
-      { h: 'Entity/Ctry', f: r => `${r.entity}/${r.country}` }, { h: 'Target', f: r => r.target_customer_id || '–' }, { h: 'Status', f: r => statusPill(r.status) },
-      { h: 'Awaiting', f: r => r.awaiting || '–' }, { h: 'By', f: r => r.requested_by }, { h: 'Created', f: r => r.created_at.replace('T', ' ') }], shown, { onRow: r => (location.hash = '#requests/' + r.request_id) }));
-  };
-  const resetPage = () => { page = 0; S.tab.reqPage = page; draw(); };
-  const drawStatusTabs = () => statusControls.replaceChildren(seg(
-    [['', 'All'], ['pending_approval', 'Pending'], ['approved', 'Approved'], ['applied', 'Applied'], ['rejected', 'Rejected'], ['draft', 'Draft']],
-    f.status, v => { f.status = v; S.tab.rs = v; drawStatusTabs(); resetPage(); }));
-  el.append(h('h1', {}, 'Requests & approvals'), h('p', { class: 'sub' }, 'Imported rows come from the CSV’s requests/audit_log tables (loaded once into the app database). Decisions made here are stored in the app database only.'),
-    statusControls,
-    h('div', { class: 'filters' },
-      h('label', {}, 'Type', sel(S.meta.options.requestTypes, f.type, v => { f.type = v; resetPage(); }, 'Any')),
-      h('label', {}, 'Awaiting role', sel(S.meta.options.roles, f.role, v => { f.role = v; resetPage(); }, 'Any')),
-      h('label', {}, 'Search', h('input', { oninput: debounce(e => { f.q = e.target.value; resetPage(); }) })),
-      h('button', { class: 'ghost', onclick: () => { f.role = $('#role').value; resetPage(); } }, 'My queue (header role)')), listBox);
-  drawStatusTabs();
-  await draw();
-  if (arg) openDrawer(arg, draw);
-};
-
-async function openDrawer(id, refresh) {
-  document.querySelector('.drawer')?.remove();
-  const d = h('div', { class: 'drawer' });
-  document.body.append(d);
-  const close = () => { d.remove(); if (location.hash.startsWith('#requests/')) history.replaceState(null, '', '#requests'); };
-  const draw = async () => {
-    let r;
-    try { r = await api('/requests/' + id); } catch (e) { d.replaceChildren(h('p', {}, e.message), h('button', { onclick: close }, 'Close')); return; }
-    const p = r.payload || {};
-    const stepEls = r.path.map((role, i) => {
-      const done = r.status === 'approved' || r.status === 'applied' || (r.status === 'pending_approval' && i < r.step_index);
-      return h('span', { class: 'step ' + (done ? 'done' : r.status === 'pending_approval' && i === r.step_index ? 'cur' : r.status === 'rejected' && i === r.step_index ? 'bad' : '') }, (done ? '✓ ' : '') + role);
-    });
-    const actions = [];
-    const actor = () => $('#actor').value.trim(), role = () => $('#role').value;
-    if (r.status === 'pending_approval') {
-      const cm = h('input', { placeholder: 'Comment (required to reject)', style: 'width:100%' });
-      actions.push(h('div', { class: 'card' }, h('h2', {}, `Awaiting ${r.awaiting}`),
-        h('p', { class: 'muted', style: 'font-size:12px' }, `You are acting as “${actor() || '—'}” in role “${role()}”. This build has no authentication: role selection is a workflow control, not access control.`), cm,
-        h('div', { style: 'margin-top:8px;display:flex;gap:8px' },
-          h('button', { onclick: () => act('decide', { actor: actor(), role: role(), decision: 'approve', comment: cm.value }) }, 'Approve'),
-          h('button', { class: 'danger', onclick: () => act('decide', { actor: actor(), role: role(), decision: 'reject', comment: cm.value }) }, 'Reject'))));
-    }
-    if (r.status === 'approved') actions.push(h('div', { class: 'card' }, h('button', { onclick: () => act('apply', { actor: actor() }) }, 'Apply to master data (app overlay)'), h('p', { class: 'muted', style: 'font-size:12px' }, 'Writes to app tables only; the source CSV is not modified.')));
-    if (r.status === 'draft') {
-      if (p.new === '<<new value>>') {
-        const nv = h('input', { placeholder: `New ${p.field}` });
-        actions.push(h('div', { class: 'card' }, h('div', { class: 'note warn' }, 'This draft only has the placeholder “<<new value>>”. Enter the real value to continue.'), nv, ' ', h('button', { onclick: () => act('new-value', { value: nv.value }) }, 'Save value')));
-      } else actions.push(h('div', { class: 'card' }, h('button', { onclick: () => act('submit', { actor: actor() }) }, 'Submit for approval')));
-    }
-    async function act(what, b) {
-      try { await api(`/requests/${id}/${what}`, b); toast('Done'); await draw(); refresh && refresh(); } catch (e) { toast(e.message); }
-    }
-    d.replaceChildren(h('div', { style: 'display:flex;justify-content:space-between' }, h('h1', {}, r.request_id), h('button', { class: 'ghost', onclick: close }, 'Close')),
-      h('p', {}, statusPill(r.status), ' ', h('span', { class: 'pill' }, r.source === 'app' ? 'created in app' : 'imported from CSV'), ' ', r.request_type.replace('_', ' '), ` · ${r.entity}/${r.country}`),
-      h('p', { class: 'muted' }, `Target ${r.target_customer_id || '—'} · requested by ${r.requested_by} · ${r.created_at.replace('T', ' ')}`),
-      h('h3', {}, 'Approval path'), h('div', { class: 'steps' }, stepEls.flatMap((e, i) => [i ? '›' : null, e])),
-      p.new === '<<new value>>' ? h('div', { class: 'note warn' }, 'This request’s payload holds only the placeholder “<<new value>>” (as in the source CSV). It can be routed, but it cannot be applied or exported until a real value is recorded.') : null,
-      h('h3', {}, 'Payload'), h('pre', { class: 'mono card', style: 'white-space:pre-wrap' }, JSON.stringify(p, null, 2)),
-      r.duplicate_check?.candidates?.length ? h('div', {}, h('h3', {}, 'Duplicate check at submission'), r.duplicate_check.candidates.map(c => h('div', { class: 'cand ' + c.class }, `${c.customer_id} ${c.name} — ${c.class} ${pct(c.score, 0)}`)), r.duplicate_check.acknowledged ? h('p', { class: 'muted' }, 'Acknowledged: ' + r.duplicate_check.acknowledged.note) : null) : null,
-      actions, h('h3', {}, 'Audit trail'), table([{ h: 'When', f: a => a.ts.replace('T', ' ') }, { h: 'Actor', f: a => a.actor }, { h: 'Action', f: a => a.action }, { h: 'Status', f: a => (a.from_status ? a.from_status + ' → ' : '') + a.to_status }, { h: 'Comment', f: a => a.comment || '' }], r.audit));
-  };
-  await draw();
-}
 
 const analyticsTabs = [['customers', 'Top customers'], ['dropoff', 'Drop-off'], ['crosssell', 'Cross-sell'], ['impact', 'Raw vs deduplicated']];
 pages.analytics = async el => {
@@ -499,61 +325,6 @@ pages.forecast = async el => {
     r.forecast ? h('div', { class: 'card' }, h('h2', {}, 'Forecast values'), table([{ h: 'Month', f: (x, i) => x }, { h: 'Rolling', num: 1, f: x => fmt(r.forecast.rolling[r.forecast.months.indexOf(x)]) }, { h: 'Seasonal', num: 1, f: x => (r.forecast.seasonal ? fmt(r.forecast.seasonal[r.forecast.months.indexOf(x)]) : 'n/a') }], r.forecast.months)) : null);
 };
 
-pages.sap = async el => {
-  const includeImported = !!S.tab.sapImported, includeExported = !!S.tab.sapReexport;
-  const options = { includeImported, includeExported };
-  const pv = await api('/sap/preview' + qs({ includeImported: includeImported ? '1' : '', includeExported: includeExported ? '1' : '' }));
-  const batches = await api('/sap/batches');
-  const body = h('div', {});
-  const exportList = h('div', {});
-  let exportPage = S.tab.sapExportPage || 0;
-  const drawExportRows = () => {
-    const pageSize = 5, pageCount = Math.max(1, Math.ceil(pv.rows.length / pageSize));
-    exportPage = Math.min(exportPage, pageCount - 1);
-    const shown = pv.rows.slice(exportPage * pageSize, (exportPage + 1) * pageSize);
-    exportList.replaceChildren(h('div', { class: 'pagination' }, h('span', { class: 'muted' }, `Showing ${exportPage * pageSize + 1}–${exportPage * pageSize + shown.length} of ${pv.rows.length} export rows`),
-      h('div', { class: 'pagination-actions' }, h('button', { class: 'ghost', disabled: exportPage === 0, onclick: () => { exportPage--; S.tab.sapExportPage = exportPage; drawExportRows(); } }, 'Previous'),
-        h('span', { class: 'muted' }, `Page ${exportPage + 1} of ${pageCount}`),
-        h('button', { class: 'ghost', disabled: exportPage + 1 >= pageCount, onclick: () => { exportPage++; S.tab.sapExportPage = exportPage; drawExportRows(); } }, 'Next'))),
-      table(pv.columns.map(c => ({ h: c, f: r => (c === 'MissingOrToConfirm' ? h('span', { style: 'font-size:11px;color:var(--warn)' }, r[c]) : r[c]) })), shown));
-  };
-  if (pv.rows.length) drawExportRows();
-  const excludedList = h('div', {});
-  let excludedTerm = '', excludedPage = S.tab.sapExcludedPage || 0;
-  const drawExcluded = () => {
-    const q = excludedTerm.trim().toLowerCase();
-    const rows = pv.excluded.filter(r => !q || `${r.request_id} ${r.type} ${r.reason}`.toLowerCase().includes(q));
-    const pageSize = 5, pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
-    excludedPage = Math.min(excludedPage, pageCount - 1);
-    const shown = rows.slice(excludedPage * pageSize, (excludedPage + 1) * pageSize);
-    excludedList.replaceChildren(h('div', { class: 'pagination' }, h('span', { class: 'muted' }, `${rows.length} of ${pv.excluded.length} excluded requests · ${rows.length ? `showing ${excludedPage * pageSize + 1}–${excludedPage * pageSize + shown.length}` : 'no matches'}`),
-      h('div', { class: 'pagination-actions' }, h('button', { class: 'ghost', disabled: excludedPage === 0, onclick: () => { excludedPage--; S.tab.sapExcludedPage = excludedPage; drawExcluded(); } }, 'Previous'),
-        h('span', { class: 'muted' }, `Page ${excludedPage + 1} of ${pageCount}`),
-        h('button', { class: 'ghost', disabled: excludedPage + 1 >= pageCount, onclick: () => { excludedPage++; S.tab.sapExcludedPage = excludedPage; drawExcluded(); } }, 'Next'))),
-      table([{ h: 'Request', f: r => r.request_id }, { h: 'Type', f: r => r.type }, { h: 'Why', f: r => r.reason }], shown));
-  };
-  if (pv.excluded.length) drawExcluded();
-  const excludedPanel = pv.excluded.length ? h('div', { class: 'card' }, h('h2', {}, 'Approved but not exportable'),
-    h('label', { class: 'exclusion-search' }, 'Search excluded requests', h('input', { type: 'search', placeholder: 'Request ID, type, or reason…', oninput: debounce(e => { excludedTerm = e.target.value; excludedPage = 0; S.tab.sapExcludedPage = excludedPage; drawExcluded(); }) })), excludedList) : null;
-  async function gen() {
-    try {
-      const r = await api('/sap/export', options);
-      const blob = new Blob([r.csv], { type: 'text/csv' }), a = h('a', { href: URL.createObjectURL(blob), download: r.fileName });
-      document.body.append(a); a.click(); a.remove();
-      toast(`${r.fileName}: ${r.rows} rows generated (file only — not imported into SAP B1)`); route();
-    } catch (e) { toast(e.message); }
-  }
-  el.append(h('h1', {}, 'SAP B1 export'), h('p', { class: 'sub' }, 'Business Partner rows from approved or applied create/update requests.'),
-    h('div', { class: 'note warn' }, pv.statement + ' Column names follow common B1 Business Partner import fields; confirm them against your own import template.'),
-    h('div', { class: 'card' }, h('h2', {}, 'Export options'),
-      h('label', { class: 'export-option' }, h('input', { type: 'checkbox', checked: includeImported, onchange: e => { S.tab.sapImported = e.target.checked; route(); } }), 'Include source-imported requests marked applied (use only after confirming they are not already in SAP B1)'),
-      h('label', { class: 'export-option' }, h('input', { type: 'checkbox', checked: includeExported, onchange: e => { S.tab.sapReexport = e.target.checked; route(); } }), 'Include requests from previous export batches (re-generate rows)')),
-    h('div', { class: 'card' }, h('button', { disabled: !pv.rows.length, onclick: gen }, `Generate CSV (${pv.rows.length} row${pv.rows.length === 1 ? '' : 's'})`), h('span', { class: 'muted' }, 'Previously exported rows are excluded unless selected above.')),
-    pv.rows.length ? h('div', { class: 'card' }, h('h2', {}, 'Preview'), exportList) : h('div', { class: 'card' }, 'No exportable rows under the current options. Approve a request or adjust the export options above.'),
-    excludedPanel,
-    batches.length ? h('div', { class: 'card' }, h('h2', {}, 'Generated files'), table([{ h: '#', f: b => b.id }, { h: 'File', f: b => b.file_name }, { h: 'Rows', num: 1, f: b => b.row_count }, { h: 'When', f: b => b.created_at.replace('T', ' ').slice(0, 16) }, { h: 'Note', f: b => b.note }], batches)) : null, body);
-};
-
 pages.data = async el => {
   const [v, fi, cap, pr] = await Promise.all([api('/validate'), api('/findings'), api('/capabilities'), api('/profile')]);
   const m = S.meta;
@@ -562,10 +333,9 @@ pages.data = async el => {
     source: h('div', { class: 'grid g2' },
       h('div', { class: 'card' }, h('h2', {}, 'Source'), h('p', {}, h('b', {}, m.source.file), ` · ${n0(m.source.rowCount)} rows · sha256 ${m.source.hash.slice(0, 12)}…`), h('p', { class: 'muted' }, 'Read-only. Never rewritten by the app.'),
         table([{ h: 'Stacked table', f: r => r[0] }, { h: 'Rows', num: 1, f: r => n0(r[1]) }], Object.entries(m.source.tables)),
-        h('button', { class: 'ghost', onclick: async () => { const r = await api('/source/refresh', {}); toast(`Refresh: +${r.importResult.requestsAdded} requests, +${r.importResult.auditAdded} audit events (existing rows untouched)`); route(); } }, 'Re-read CSV & import new workflow rows')),
-      h('div', { class: 'card' }, h('h2', {}, 'App data (separate from CSV)'), table([{ h: 'Store', f: r => r[0] }, { h: 'Count', num: 1, f: r => r[1] }], [
-        ...m.appData.requests.map(r => [`requests (${r.source})`, r.n]), ['new customers created', m.appData.newCustomers], ['field updates applied', m.appData.fieldOverrides], ['canonical (merge) overrides', m.appData.canonicalOverrides], ['deactivated customers', m.appData.inactive]]),
-        h('h3', {}, 'Import history'), table([{ h: 'When', f: r => r.at.slice(0, 16).replace('T', ' ') }, { h: 'Requests +', num: 1, f: r => r.requests_added }, { h: 'Audit +', num: 1, f: r => r.audit_added }], m.imports))),
+        h('button', { class: 'ghost', onclick: async () => { const r = await api('/source/refresh', {}); toast(`Refresh: +${r.importResult.requestsAdded} requests, +${r.importResult.master.customers} customers, +${r.importResult.master.purchaseOrders} POs (existing rows untouched; ${r.importResult.master.upstreamChanged} changed upstream, not applied)`); route(); } }, 'Re-read CSV & import new rows')),
+      h('div', { class: 'card' }, h('h2', {}, 'Database (data/app.db)'), table([{ h: 'Table', f: r => r[0] }, { h: 'Rows', num: 1, f: r => n0(r[1]) }], Object.entries(m.db)),
+        h('h3', {}, 'Import history'), table([{ h: 'When', f: r => r.at.slice(0, 16).replace('T', ' ') }, { h: 'Requests +', num: 1, f: r => r.requests_added }, { h: 'Audit +', num: 1, f: r => r.audit_added }, { h: 'Master rows +', f: r => { try { const d = JSON.parse(r.detail_json); return `${d.customers} cust · ${d.purchaseOrders} POs · ${d.items} items · ${d.inbox} msgs`; } catch { return '–'; } } }], m.imports))),
     validation: h('div', { class: 'card' }, h('h2', {}, `Validation (${v.checks.filter(c => c.pass).length}/${v.checks.length} pass)`), table([{ h: '', f: c => h('span', { class: 'pill ' + (c.pass ? 'good' : 'bad') }, c.pass ? 'PASS' : 'FAIL') }, { h: 'Check', f: c => c.name }, { h: 'Detail', f: c => c.detail }], v.checks)),
     findings: h('div', {},
       h('div', { class: 'card' }, h('h2', {}, 'Findings in the data'), table([{ h: '', f: x => h('span', { class: 'pill ' + (colour[x.severity] || '') }, x.severity) }, { h: 'Area', f: x => x.area }, { h: 'Finding', f: x => x.text }], fi)),
@@ -581,11 +351,15 @@ pages.data = async el => {
 };
 
 // ---------- router ----------
-const NAV = [['overview', 'Overview'], ['intake', 'Intake'], ['requests', 'Requests'], ['duplicates', 'Duplicates'], ['analytics', 'Analytics'], ['forecast', 'Forecast'], ['sap', 'SAP B1 export'], ['data', 'Data & quality']];
+const NAV = [['home', 'Home'], ['overview', 'Overview'], ['master', 'Master data'], ['intake', 'New request'], ['requests', 'Requests'], ['inbox', 'Inbox'], ['duplicates', 'Duplicates'], ['regional', 'Regional view'], ['analytics', 'Analytics'], ['forecast', 'Forecast'], ['sap', 'SAP B1 export'], ['config', 'Config'], ['data', 'Data & quality']];
+const mayView = k => !!S.me && S.me.views.includes(k);
 async function route() {
-  const [name, arg] = (location.hash.slice(1) || 'overview').split('/');
-  const page = pages[name] ? name : 'overview';
-  $('#nav').replaceChildren(...NAV.map(([k, l]) => h('a', { class: k === page ? 'on' : '', onclick: () => (location.hash = '#' + k) }, l)));
+  if (!S.me) return;
+  const [name, arg] = (location.hash.slice(1) || 'home').split('/');
+  document.querySelector('.drawer')?.remove();
+  // a position only ever gets the views its profile grants; anything else falls back to Home
+  const page = pages[name] && mayView(name) ? name : 'home';
+  $('#nav').replaceChildren(...NAV.filter(([k]) => mayView(k)).map(([k, l]) => h('a', { class: k === page ? 'on' : '', onclick: () => (location.hash = '#' + k) }, l)));
   document.querySelector('.drawer')?.remove();
   const el = $('#view');
   el.replaceChildren();
@@ -597,10 +371,22 @@ addEventListener('hashchange', route);
   const th = store.get('theme', '');
   if (th) document.documentElement.dataset.theme = th;
   $('#theme').onclick = () => { const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); const nx = cur === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = nx; store.set('theme', nx); route(); };
-  S.meta = await api('/meta');
-  $('#role').replaceChildren(...S.meta.options.roles.map(r => h('option', { value: r, selected: r === store.get('role') }, r)));
-  $('#role').onchange = e => store.set('role', e.target.value);
-  $('#actor').value = store.get('actor', '');
-  $('#actor').oninput = e => store.set('actor', e.target.value);
-  route();
+  S.positions = await api('/positions');
+  ACT.role = S.positions.positions.some(p => p.role === actStore.get('role')) ? actStore.get('role') : 'MDM Team';
+  ACT.region = S.positions.regions.includes(actStore.get('region')) ? actStore.get('region') : 'ALL';
+  const kindLabel = { requestor: 'Requestors', approver: 'Approvers', mdm: 'MDM team', admin: 'IT' };
+  $('#position').replaceChildren(...['requestor', 'approver', 'mdm', 'admin'].map(k => h('optgroup', { label: kindLabel[k] }, S.positions.positions.filter(p => p.kind === k).map(p => h('option', { value: p.role, selected: p.role === ACT.role }, p.role)))));
+  $('#region').replaceChildren(...S.positions.regions.map(r => h('option', { value: r, selected: r === ACT.region }, r === 'ALL' ? 'All regions' : r + ' – ' + (COUNTRY_NAME[r] || r))));
+  const change = async () => { actStore.set('role', ACT.role); actStore.set('region', ACT.region); document.querySelector('.drawer')?.remove(); await start(); };
+  $('#position').onchange = e => { ACT.role = e.target.value; change(); };
+  $('#region').onchange = e => { ACT.region = e.target.value; change(); };
+  await start();
 })().catch(e => { document.body.append(h('pre', {}, 'Failed to start: ' + e.message)); });
+
+async function start() {
+  S.me = await api('/me');
+  S.meta = await api('/meta');
+  S.tab = {}; S.f = { country: '', product: '', entity: '' };
+  if (!location.hash || !mayView(location.hash.slice(1).split('/')[0])) location.hash = '#home';
+  route();
+}

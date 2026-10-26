@@ -40,7 +40,8 @@ const DEFAULTS = { duplicate: 0.9, possible: 0.75 };
 function comparePair(a, b) {
   const nA = normName(a.name), nB = normName(b.name);
   const nameSim = ratio(nA, nB);
-  const addrSim = ratio(normAddress(a.address), normAddress(b.address));
+  const hasAddr = !!(strip(a.address) && strip(b.address));
+  const addrSim = hasAddr ? ratio(normAddress(a.address), normAddress(b.address)) : 0;
   const uA = normUen(a.uen), uB = normUen(b.uen);
   const bothUen = !!(uA && uB);
   const uenMatch = bothUen && uA === uB;
@@ -48,7 +49,10 @@ function comparePair(a, b) {
   const sameCountry = !a.country || !b.country || a.country === b.country;
   const reasons = [];
 
-  let score = 0.65 * nameSim + 0.35 * addrSim;
+  // records without addresses (items, cost centers) are compared on name alone
+  let score = hasAddr ? 0.65 * nameSim + 0.35 * addrSim : nameSim;
+  const keyA = strip(a.key).replace(/ /g, ''), keyB = strip(b.key).replace(/ /g, '');
+  if (keyA && keyA === keyB) { score = Math.max(score, 0.95); reasons.push('Same code (hard key)'); }
   if (uenMatch && sameCountry) { score = Math.max(score, 0.9) * 0.4 + 0.6; reasons.push('Registration no. matches exactly (hard key)'); }
   else if (uenMatch) reasons.push('Registration no. matches but country differs');
   if (uenConflict) { score = Math.min(score, 0.6); reasons.push('Registration no. conflicts — treated as different company'); }
@@ -57,7 +61,7 @@ function comparePair(a, b) {
   else if (nameSim >= 0.85) reasons.push(`Name similar (${Math.round(nameSim * 100)}%) after normalisation`);
   if (addrSim >= 0.95) reasons.push('Address matches after normalisation');
   else if (addrSim >= 0.8) reasons.push(`Address similar (${Math.round(addrSim * 100)}%)`);
-  if (!bothUen && !uenConflict) reasons.push('Registration no. missing on one side — no hard key available');
+  if (!bothUen && !uenConflict && (a.uen !== undefined || b.uen !== undefined)) reasons.push('Registration no. missing on one side — no hard key available');
   if (a.entity && b.entity && a.entity !== b.entity) reasons.push(`Different owning entity (${a.entity} vs ${b.entity})`);
   return { score: Math.min(1, Math.max(0, score)), nameSim, addrSim, uenMatch, uenConflict, reasons };
 }

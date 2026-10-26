@@ -58,7 +58,7 @@ test('workflow persists across restarts, never touches the CSV, and import is id
   // REQ0012 is pending at Compliance Officer (name update, TH)
   const r0 = call(app, 'GET /api/requests/:id', { params: { id: 'REQ0012' } });
   assert.equal(r0.awaiting, 'Compliance Officer');
-  assert.throws(() => app.wf.decide('REQ0012', { actor: 'x.y', role: 'Data Steward', decision: 'approve' }), /Awaiting Compliance Officer/);
+  assert.throws(() => app.wf.decide('REQ0012', { actor: 'x.y', role: 'Data Steward', decision: 'approve' }), /Awaiting Finance/);
   const done = app.wf.decide('REQ0012', { actor: 'k.lee', role: 'Compliance Officer', decision: 'approve', comment: 'ok' });
   assert.equal(done.status, 'approved');
   app.db.close();
@@ -95,7 +95,7 @@ test('intake validation + duplicate gate + approval + apply + SAP export', () =>
   assert.match(req.request_id, /^NEW-/);
 
   assert.throws(() => app.wf.decide(req.request_id, { actor: 'sales.sg@hq', role: 'Data Steward', decision: 'approve' }), /own request/);
-  assert.throws(() => app.wf.decide(req.request_id, { actor: 'a', role: 'Entity Finance Lead', decision: 'approve' }), /Awaiting Data Steward/);
+  assert.throws(() => app.wf.decide(req.request_id, { actor: 'a', role: 'Entity Finance Lead', decision: 'approve' }), /Awaiting MDM Team/);
   assert.throws(() => app.wf.decide(req.request_id, { actor: 'a', role: 'Data Steward', decision: 'reject' }), /comment is required/);
   app.wf.decide(req.request_id, { actor: 'lim.jh', role: 'Data Steward', decision: 'approve' });
   const appr = app.wf.decide(req.request_id, { actor: 'tan.wl', role: 'Entity Finance Lead', decision: 'approve' });
@@ -120,7 +120,7 @@ test('intake validation + duplicate gate + approval + apply + SAP export', () =>
   assert.equal(ex.rows[0].City, 'Singapore');
   assert.equal(ex.rows[0].ZipCode, '123456');
   const out = call(app, 'POST /api/sap/export', { body: {} });
-  assert.match(out.csv, /^CardCode,CardName/);
+  assert.match(out.csv, /^CardCode,CardType,GroupCode,Currency,CardName/);
   assert.match(out.statement, /Nothing has been sent/);
   assert.throws(() => call(app, 'POST /api/sap/export', { body: {} }), e => e.status === 409); // already exported
 

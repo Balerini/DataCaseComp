@@ -102,3 +102,9 @@ tr.click { cursor: pointer; } tr.click:hover { background: var(--surface-2); }
 .cand.duplicate { border-color: var(--bad); } .cand.possible { border-color: var(--warn); }
 .drawer { position: fixed; top: 0; right: 0; width: min(560px, 100%); height: 100%; background: var(--surface); border-left: 1px solid var(--line); padding: 16px; overflow: auto; z-index: 10; box-shadow: -4px 0 16px rgba(0,0,0,.2); }
 @media (max-width: 600px) { main { padding: 12px; } .top { padding: 8px 12px; } }
+
+.me { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.me-name { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+
+.who label { display: flex; gap: 6px; align-items: center; }
+.who select { max-width: 190px; }
