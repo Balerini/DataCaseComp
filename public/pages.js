@@ -4,7 +4,7 @@
 
 const domOf = k => S.meta.options.domains.find(d => d.key === k);
 const verbLabel = { create: 'Create', update: 'Change', merge: 'Merge duplicates', deactivate: 'Deactivate' };
-const fieldLabel = f => (f.label || f.name) + (f.required ? ' *' : '') + (f.sensitive ? ' 🔒' : '');
+const fieldLabel = f => (f.label || f.name) + (f.required ? '\u00a0*' : '') + (f.sensitive ? ' 🔒' : '');
 const srcPill = s => h('span', { class: 'pill ' + ({ csv: 'good', proposed: 'warn', app: 'info', imported: 'good' }[s] || '') }, s === 'proposed' ? 'proposed' : s === 'csv' ? 'from CSV' : s);
 const NOTE_SENS = 'Sensitive values (🔒) are masked unless you act as a role allowed to see them and enter a user id; every reveal is logged.';
 
@@ -162,9 +162,17 @@ pages.intake = async el => {
     else if (d && F.verb === 'create' && (F.values.name || F.values.item_code)) nodes.push(h('div', { class: 'note good' }, 'No similar record found in the master data.'));
     side.replaceChildren(...nodes);
     if (F.verb === 'create' && (d?.duplicates || []).some(c => c.class === 'duplicate'))
-      side.append(h('div', { class: 'card' }, h('div', { class: 'note bad' }, 'A likely duplicate exists. Do not create a new record unless this is genuinely a different one.'),
-        h('label', { style: 'flex-direction:row;gap:8px;align-items:center' }, h('input', { type: 'checkbox', checked: F.dup_ack, onchange: e => { F.dup_ack = e.target.checked; } }), 'I confirm this is a different record'),
-        h('label', {}, 'Why is it different? *', h('input', { value: F.dup_note, oninput: e => { F.dup_note = e.target.value; } }))));
+      side.append(h('div', { class: 'card', style: 'display: flex; flex-direction: column; gap: 12px;' }, 
+          h('div', { class: 'note bad' }, 'A likely duplicate exists. Do not create a new record unless this is genuinely a different one.'),
+          h('label', { style: 'display: flex; flex-direction: row; gap: 8px; align-items: center;' }, 
+              h('input', { type: 'checkbox', checked: F.dup_ack, onchange: e => { F.dup_ack = e.target.checked; } }), 
+              'I confirm this is a different record'
+          ),
+          h('label', { style: 'display: flex; flex-direction: column; gap: 4px;' }, 
+              'Why is it different? *', 
+              h('input', { value: F.dup_note, oninput: e => { F.dup_note = e.target.value; } })
+          )
+      ));
   };
   async function go(submit) {
     touched = true;

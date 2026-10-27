@@ -16,7 +16,7 @@ const PROPOSED_FIELDS = {
     ['name', 'Item description', 'string', 1, '^.{2,100}$', 0, 'name', 1, 'ItemName', 'Description'],
     ['product_line', 'Product line', 'enum', 1, 'A|B|C|Other', 0, null, 1, 'ItmsGrpCod', 'A, B, C are the core products in the PO data'],
     ['uom', 'Unit of measure', 'string', 0, '^.{1,20}$', 0, null, 1, 'InvntryUom', ''],
-    ['regulated', 'Regulated product (needs Quality/Regulatory sign-off)', 'enum', 1, 'Y|N', 0, null, 1, null, 'Drives the Quality/Regulatory approval step'],
+    ['regulated', 'Regulated product (Quality/Regulatory sign-off)', 'enum', 1, 'Y|N', 0, null, 1, null, 'Drives the Quality/Regulatory approval step'],
     ['license_no', 'Licence / registration no.', 'string', 0, '^.{3,40}$', 0, null, 1, null, ''],
   ],
   vendor: [

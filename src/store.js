@@ -95,6 +95,12 @@ function openDb(file = DB_PATH) {
   if (hasTable(db, 'requests') && !hasColumn(db, 'requests', 'requested_role')) db.exec('ALTER TABLE requests ADD COLUMN requested_role TEXT');
   db.exec('DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS users;'); // named-person sign-in was removed: positions only
   db.exec(SCHEMA);
+  db.prepare(`
+    UPDATE domain_fields
+    SET label = 'Regulated product (Quality/Regulatory sign-off)'
+    WHERE domain = 'item'
+      AND name = 'regulated'
+  `).run();
   return db;
 }
 
