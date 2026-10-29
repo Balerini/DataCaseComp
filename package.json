@@ -6,7 +6,10 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test test/*.test.js",
-    "validate": "node src/validate.js"
+    "validate": "node src/validate.js",
+    "seed-demo": "node scripts/seed-demo.js"
   },
-  "engines": { "node": ">=22.5" }
+  "engines": {
+    "node": ">=22.5"
+  }
 }
