@@ -153,7 +153,7 @@ pages.intake = async el => {
     drawErrors();
     const d = last, nodes = [];
     if (d?.route) nodes.push(h('div', { class: 'card' }, h('h2', {}, 'Approval route'),
-      d.route.steps.length ? h('div', { class: 'steps' }, d.route.steps.flatMap((st, i) => [i ? '›' : null, h('span', { class: 'step', title: `${st.rule_id}: ${st.note || ''} · SLA ${st.sla_hours}h` }, `${st.role} · ${st.sla_hours}h`)])) : h('p', { class: 'muted' }, 'No rule matched.'),
+      d.route.steps.length ? h('div', { class: 'steps' }, d.route.steps.flatMap((st, i) => [i ? '›' : null, h('span', { class: 'step', title: `${st.rule_id} (rule role: ${st.role}): ${st.note || ''} · SLA ${st.sla_hours}h` }, `${st.position || st.role} · ${st.sla_hours}h`)])) : h('p', { class: 'muted' }, 'No rule matched.'),
       d.route.context.openPoValueSgd != null ? h('p', { class: 'muted', style: 'font-size:12px' }, `Open-PO value proxy (POs in last ${d.route.openPoWindowDays} days): ${moneyFull(d.route.context.openPoValueSgd)} — the source has no PO status, so R07 uses this proxy.`) : null));
     if (d?.duplicates?.length) nodes.push(h('div', { class: 'card' }, h('h2', {}, 'Possible existing records'),
       d.duplicates.map(c => h('div', { class: 'cand ' + c.class }, h('div', {}, h('b', {}, c.name), ' ', h('span', { class: 'pill ' + (c.class === 'duplicate' ? 'bad' : 'warn') }, `${c.class} · ${pct(c.score, 0)}`)),

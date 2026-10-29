@@ -195,7 +195,9 @@ function makeWorkflow(ctx) {
     let route = null;
     if ((!Object.keys(errors).length || forPreview) && (country || !byName.country?.required)) {
       const actx = approvalContext(domain, body.request_type, country, plain, payload, target);
-      route = { ...buildApprovalPath(rulesOf(), actx), context: { ...actx, values: undefined }, openPoWindowDays: OPEN_PO_DAYS };
+      const built = buildApprovalPath(rulesOf(), actx), amap = ctx.access.aliasMap();
+      // each step names the position that performs it (the rule's own role is kept for traceability)
+      route = { ...built, steps: built.steps.map(s => ({ ...s, position: ctx.access.positionOf(s.role, amap) })), context: { ...actx, values: undefined }, openPoWindowDays: OPEN_PO_DAYS };
     }
     return { domain, verb, type: body.request_type, entity, country, target, payload, errors, duplicates, route };
   }
